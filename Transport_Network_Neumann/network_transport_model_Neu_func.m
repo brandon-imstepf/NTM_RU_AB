@@ -1,573 +1,776 @@
-function [N, M, R_Edge_Mass] = network_transport_model_Neu_func(matdir,varargin) %(matdir,varargin)
+function [N, M, R_Edge_Mass] = network_transport_model_Neu_func(matdir, varargin)
+% network_transport_model_Neu_func  Main NTM solver: time-evolve tau spread on the brain network.
+%
+% =========================================================================
+% BIOLOGICAL CONTEXT
+% =========================================================================
+% This function implements the Network Transport Model (NTM) for misfolded
+% tau protein propagation in the mouse brain.  Tau spreads through axonal
+% connections between brain regions (nodes) modeled as a weighted directed
+% graph (the connectome).
+%
+% Each brain region i holds two tau populations:
+%
+%   N_i(t) – soluble ("free") tau in the extracellular/interstitial space.
+%             This is the tau that can be taken up by axons and transported.
+%
+%   M_i(t) – aggregated (bound) tau.  In the model, M is assumed to be in
+%             QUASI-STATIC EQUILIBRIUM with N at all times:
+%               M_i = gamma1 * N_i^2 / (beta - gamma2 * N_i)
+%             This is derived from a fast aggregation ODE that is slaved
+%             to N (the aggregation timescale is much shorter than spreading).
+%
+% =========================================================================
+% MATHEMATICAL STRUCTURE
+% =========================================================================
+% The network ODE for N_i(t) is:
+%
+%   d/dt [N_i + M_i(N_i)] = (1/Vol_i) * [ sum_j Conn_ji * J_L(j→i)
+%                                          - sum_j Conn_ij * J_0(i→j) ]
+%                           + alpha * N_i
+%
+% Using the chain rule, dM/dt = (dM/dN) * dN/dt = m_t * dN/dt, so:
+%
+%   (1 + m_t_i) * dN_i/dt = (1/Vol_i) * [net_flux_in_i - net_flux_out_i]
+%                           + alpha * N_i
+%
+% where m_t_i = dM/dN = gamma1*N_i*(2*beta - gamma2*N_i) / (beta - gamma2*N_i)^2
+%
+% J_L(j→i) and J_0(i→j) are the steady-state axonal fluxes computed by
+% NetworkFluxCalculator_Neu at each time step.
+%
+% =========================================================================
+% QUASI-STATIC ASSUMPTION FOR AXONS
+% =========================================================================
+% At each time step we solve the STEADY-STATE axon BVP with the current N
+% values as Dirichlet-like data at the endpoints.  This is valid because
+% axonal transport equilibrates (timescale: hours) much faster than the
+% network-level tau spreading (timescale: months-years).
+%
+% =========================================================================
+% TIME INTEGRATION SCHEME
+% =========================================================================
+% Two regimes:
+%   h <= 50  (first 50 steps): MIDPOINT METHOD (2nd-order Runge-Kutta).
+%            Uses a predictor step to estimate N at h+1/2, recomputes
+%            fluxes there, then takes a full step.  More accurate during
+%            the rapidly-changing early phase.
+%
+%   h > 50:  FORWARD EULER (1st-order).  Acceptable once N is varying
+%            smoothly.  Avoids the cost of two flux-calculator calls per step.
+%
+% =========================================================================
+% OUTPUTS
+% =========================================================================
+%   N          – soluble tau: [nroi x nt]  (primary result)
+%   M          – bound tau:   [nroi x nt]  (derived from N via equilibrium formula)
+%   R_Edge_Mass – placeholder 0 (edge-mass computation is disabled for speed)
 
+% =========================================================================
+% SECTION 1: Default parameter values
+% All parameters can be overridden via varargin name-value pairs.
+% =========================================================================
 if nargin < 4
-    matdir = [cd filesep 'MatFiles'];
- %matdir = [cd filesep 'MatFiles'];
+    matdir = [cd filesep 'MatFiles'];  % default: look in ./MatFiles
 end
-alpha_ =0; %1e-2;  % 0; % Recruitment teralm
-F_edge_0_ = 2; %1e-8*6*30*24*(60)^2;%1e-08; %Recruitment term edge % 0.5 - 9.9
-beta_ = 1e-06;
-gamma1_ =0.001; %1e-5 ;%0.001; %2e-03; 
-gamma2_ = 0;
-delta_ = 50;% 1; %50;
-epsilon_ = 25; %1e-02;
-    %25;
-lambda1_ = 1e-02;   %0.005;%0.025
-%lambda2_ = 1e-02; %0.005;% 0.025
-gamma1_dt_=0;
-lambda_dt_=0;
-study_ = 'Hurtado';
-init_path_ = [];
-init_rescale_ = 2e-2; %2; %2e-2; # Lower rescale
-dt_ =0.01;
-T_ = 0.1;
-%trange_ =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:2];
-%trange_ = [0:0.001:0.004, 0.005:0.005:0.05, 0.06:0.01:0.1, 0.125:0.025:2];
+
+% --- Kinetic rate constants ---
+alpha_     = 0;         % linear tau growth / recruitment rate (0 = no growth)
+F_edge_0_  = 2;         % baseline distributed source along axon edges
+beta_      = 1e-06;     % aggregation saturation constant (denominator in M(N))
+gamma1_    = 0.001;     % aggregation rate gamma1 (soluble → bound conversion)
+gamma2_    = 0;         % secondary aggregation (usually 0)
+delta_     = 50;        % motor-crowding factor: v_a scales as (1 + delta*n)
+epsilon_   = 25;        % aggregation-velocity coupling: high epsilon → aggregates slow transport
+lambda1_   = 1e-02;     % AIS diffusivity modifier (AIS acts as partial barrier for diffusion)
+gamma1_dt_ = 0;         % time derivative of gamma1 (0 = constant in time)
+lambda_dt_ = 0;         % time derivative of lambda1
+
+% --- Boundary flux rates ---
+mu_r_0_   = 5;          % release rate at soma end (x=0) [concentration/time]
+mu_r_L_   = mu_r_0_;    % release rate at synapse end (x=L)
+mu_u_0_   = 5;          % uptake rate at soma end
+mu_u_L_   = mu_u_0_;    % uptake rate at synapse end
+
+% --- Spatial geometry ---
+L_int_    = 1000;       % axon length [um]
+L1_       = 200;        % somatodendritic compartment length [um]
+L_ais_    = 40;         % AIS length [um]
+L_syn_    = 40;         % synaptic terminal length [um]
+
+% --- Physical scaling ---
+time_scale_ = 6*30*24*(60)^2;  % one month in seconds (model time unit)
+len_scale_  = 1e-3;             % micrometers → millimeters
+
+% --- Simulation time parameters ---
+dt_     = 0.01;   % time step size (in model units = months)
+T_      = 0.1;    % end time
+% Custom non-uniform time grid: fine early on (fast changes), coarser later.
 trange_ = [0:0.0001:0.002, 0.003:0.001:0.1, 0.105:0.005:2];
 
-%trange_ = [0:0.0005:0.002, 0.0025:0.0025:0.1, 0.11:0.01:0.2, 0.225:0.025:2];
-%trange_ = [0:0.0005:0.002, 0.0025:0.0025:0.1, 0.125:0.025:2];
+% --- Numerical tolerances ---
+reltol_     = 1e-6;
+abstol_     = 1e-6;
+fsolvetol_  = 1e-20;
 
-length(trange_)
-%trange_ =[0 0.0005: 0.0025, 0.003: 0.0025: 0.053];
-frac_ = 0.92; % Average fraction of n diffusing (Konsack 2007)
-L_int_ = 1000; % in micrometers
-L1_ = 200;
-%L2_ = 200; 
-L_ais_ = 40;
-L_syn_ = 40;
-resmesh_ = 'fine';
-plotting_ = 1;
-reltol_ = 1e-6;
-abstol_ = 1e-6;
-fsolvetol_ = 1e-20;
-connectome_subset_ = 'Hippocampus+PC+RSP';
-time_scale_ = 6*30*24*(60)^2;
-len_scale_ = 1e-3;
+% --- Brain region / network selection ---
+study_            = 'Hurtado';               % which mouse tauopathy experiment to use
+connectome_subset_ = 'Hippocampus+PC+RSP';  % which brain regions to model
+init_path_        = [];                      % manual seed (empty = use study default)
+init_rescale_     = 2e-2;                    % target total tau (N+M) at t=0 in seeded regions
+frac_             = 0.92;                    % free-tau fraction (Konsack 2007)
+resmesh_          = 'fine';                  % spatial mesh resolution for axon ODE
+axon_div_         = 'r1';                    % axon mass attribution: 'r1' (all to source), 'r2', or 'half'
+plotting_         = 1;
 
-mu_r_0_ = 5; %1e-07*time_scale_; %1.5552 %release at x=0 % 1-9.9
-mu_r_L_ = mu_r_0_; %release at x=L
-mu_u_0_ = 5; %1e-07*time_scale_; %uptake at x=0 % 1-9.9
-mu_u_L_ = mu_u_0_; %uptake at x=L
-
-axon_div_ = 'r1';
-
+% =========================================================================
+% SECTION 2: inputParser – accept and validate overriding arguments
+% =========================================================================
 ip = inputParser;
-% validChar = @(x) ischar(x);
-validScalar = @(x) isnumeric(x) && isscalar(x)&& (x>=0);
+validScalar  = @(x) isnumeric(x) && isscalar(x) && (x >= 0);
 validLogical = @(x) validScalar(x) && (x == 0 || x == 1);
-validAxonDiv=@(x) strcmp(x,'r1') | strcmp(x,'half') | strcmp(x,'r2');
-addParameter(ip, 'alpha', alpha_, validScalar);
-addParameter(ip, 'F_edge_0', F_edge_0_, validScalar);
-addParameter(ip, 'beta', beta_, validScalar);
-addParameter(ip, 'gamma1', gamma1_, validScalar);
-addParameter(ip, 'gamma2', gamma2_, validScalar);
-addParameter(ip, 'delta', delta_, validScalar);
-addParameter(ip, 'epsilon', epsilon_, validScalar);
-addParameter(ip, 'frac', frac_, validScalar);
-addParameter(ip, 'lambda1', lambda1_, validScalar);
-%addParameter(ip, 'lambda2', lambda2_, validScalar);
-addParameter(ip, 'gamma1_dt', gamma1_dt_, validScalar);
-addParameter(ip, 'lambda_dt', lambda_dt_, validScalar);
-addParameter(ip, 'L_int', L_int_, validScalar);
-addParameter(ip, 'L1', L1_, validScalar);
-%addParameter(ip, 'L2', L2_, validScalar);
-addParameter(ip, 'resmesh', resmesh_);
-addParameter(ip, 'L_ais', L_ais_);
-addParameter(ip, 'L_syn', L_syn_);
-addParameter(ip, 'reltol', reltol_, validScalar);
-addParameter(ip, 'abstol', abstol_, validScalar);
-addParameter(ip, 'fsolvetol', fsolvetol_, validScalar);
+validAxonDiv = @(x) strcmp(x,'r1') | strcmp(x,'half') | strcmp(x,'r2');
+
+addParameter(ip, 'alpha',             alpha_,              validScalar);
+addParameter(ip, 'F_edge_0',          F_edge_0_,           validScalar);
+addParameter(ip, 'beta',              beta_,               validScalar);
+addParameter(ip, 'gamma1',            gamma1_,             validScalar);
+addParameter(ip, 'gamma2',            gamma2_,             validScalar);
+addParameter(ip, 'delta',             delta_,              validScalar);
+addParameter(ip, 'epsilon',           epsilon_,            validScalar);
+addParameter(ip, 'frac',              frac_,               validScalar);
+addParameter(ip, 'lambda1',           lambda1_,            validScalar);
+addParameter(ip, 'gamma1_dt',         gamma1_dt_,          validScalar);
+addParameter(ip, 'lambda_dt',         lambda_dt_,          validScalar);
+addParameter(ip, 'L_int',             L_int_,              validScalar);
+addParameter(ip, 'L1',                L1_,                 validScalar);
+addParameter(ip, 'resmesh',           resmesh_);
+addParameter(ip, 'L_ais',             L_ais_);
+addParameter(ip, 'L_syn',             L_syn_);
+addParameter(ip, 'reltol',            reltol_,             validScalar);
+addParameter(ip, 'abstol',            abstol_,             validScalar);
+addParameter(ip, 'fsolvetol',         fsolvetol_,          validScalar);
 addParameter(ip, 'connectome_subset', connectome_subset_);
-addParameter(ip, 'len_scale', len_scale_, validScalar);
-addParameter(ip, 'time_scale', time_scale_, validScalar);
-addParameter(ip, 'mu_r_0',mu_r_0_);
-addParameter(ip, 'mu_r_L',mu_r_L_);
-addParameter(ip, 'mu_u_0',mu_u_0_);
-addParameter(ip, 'mu_u_L',mu_u_L_);
-addParameter(ip, 'study', study_);
-addParameter(ip, 'init_rescale', init_rescale_, validScalar);
-addParameter(ip, 'dt', dt_);
-addParameter(ip, 'T', T_);
-addParameter(ip, 'trange', trange_);
-addParameter(ip, 'init_path', init_path_);
-addParameter(ip, 'plotting', plotting_, validLogical);
-addParameter(ip, 'axon_div', axon_div_, validAxonDiv)
+addParameter(ip, 'len_scale',         len_scale_,          validScalar);
+addParameter(ip, 'time_scale',        time_scale_,         validScalar);
+addParameter(ip, 'mu_r_0',            mu_r_0_);
+addParameter(ip, 'mu_r_L',            mu_r_L_);
+addParameter(ip, 'mu_u_0',            mu_u_0_);
+addParameter(ip, 'mu_u_L',            mu_u_L_);
+addParameter(ip, 'study',             study_);
+addParameter(ip, 'init_rescale',      init_rescale_,       validScalar);
+addParameter(ip, 'dt',                dt_);
+addParameter(ip, 'T',                 T_);
+addParameter(ip, 'trange',            trange_);
+addParameter(ip, 'init_path',         init_path_);
+addParameter(ip, 'plotting',          plotting_,           validLogical);
+addParameter(ip, 'axon_div',          axon_div_,           validAxonDiv);
 parse(ip, varargin{:});
 
-load([matdir filesep 'Mouse_Tauopathy_Data_HigherQ.mat'],'mousedata_struct'); 
-load([matdir filesep 'DefaultAtlas.mat'],'DefaultAtlas'); 
-load([matdir filesep 'CCF_labels.mat'],'CCF_labels');
-load([matdir filesep 'Connectomes.mat'],'Connectomes');
-Conn = Connectomes.default;
-for i=1:length(Conn)
-    for j=1:length(Conn)
-       if i==j
-           Conn(i,j)=0;
-       end
+% =========================================================================
+% SECTION 3: Load data files
+%
+% Four .mat files are required in matdir:
+%   Mouse_Tauopathy_Data_HigherQ.mat  – measured tau data from mouse studies
+%   DefaultAtlas.mat                  – brain region volumes in the CCF atlas
+%   CCF_labels.mat                    – region names, parents, hemisphere labels
+%   Connectomes.mat                   – axonal connectivity matrices
+% =========================================================================
+load([matdir filesep 'Mouse_Tauopathy_Data_HigherQ.mat'], 'mousedata_struct');
+load([matdir filesep 'DefaultAtlas.mat'],                  'DefaultAtlas');
+load([matdir filesep 'CCF_labels.mat'],                    'CCF_labels');
+load([matdir filesep 'Connectomes.mat'],                   'Connectomes');
+
+% =========================================================================
+% SECTION 4: Preprocess the connectome
+%
+% Connectomes.default is the raw axonal connectivity matrix [426 x 426].
+% We:
+%   (a) Remove self-connections (diagonal → 0): no self-loops in the model.
+%   (b) Threshold at 80% of the mean non-zero connection strength to remove
+%       weak/spurious connections.  This prevents low-quality tract-tracing
+%       data from introducing noise into the model.
+% =========================================================================
+Conn = Connectomes.default;  % raw connectivity matrix [nroi_full x nroi_full]
+
+% Zero out the diagonal (no self-connections)
+for i = 1:length(Conn)
+    for j = 1:length(Conn)
+        if i == j
+            Conn(i, j) = 0;
+        end
     end
 end
+
+% Threshold: keep only connections above 80% of the mean non-zero weight
 thresh_C = 0.8 * mean(nonzeros(Conn(:)));
 Conn(Conn < thresh_C) = 0;
 
+% Binary adjacency matrix (1 = connection exists, 0 = no connection)
 Adj = logical(Conn);
-% Conn = readmatrix([matdir filesep 'mouse_connectome_19_01.csv']);
-% Adj = readmatrix([matdir filesep 'mouse_adj_matrix_19_01.csv']);
 
-
+% =========================================================================
+% SECTION 5: Determine the initial tau seed distribution (init_path)
+%
+% Three cases depending on inputs:
+%
+%   (A) Manual seed: init_path was specified as a list of region names.
+%       We look up each name in CCF_labels and set those regions to 1.
+%
+%   (B) Study with no designated seed (seed field = NaN):
+%       The first time point of the study data is used as a continuous
+%       (non-binary) seed.  Values are normalized by their mean.
+%
+%   (C) Study with a designated seed (common case):
+%       The seed field is a binary vector; we remap it to CCF space.
+%
+% In all cases, init_path is a [426 x 1] vector with non-zero entries
+% in the initially seeded regions, then remapped to CCF via DataToCCF.
+% =========================================================================
 if ~isempty(ip.Results.init_path)
-    init_path = zeros(size(Conn,1),1);
+    % Case A: manually specified region list
+    init_path = zeros(size(Conn, 1), 1);
     for i = 1:length(ip.Results.init_path)
-        reghemstr = ip.Results.init_path{i};
-        reghemcell = split(reghemstr,'_');
-        reglog = ismember(CCF_labels(:,1),reghemcell{1});
-        if strcmp(reghemcell{2},'L')
-            hemlog = ismember(CCF_labels(:,4),'Left Hemisphere'); 
-        elseif strcmp(reghemcell{2},'R')
-            hemlog = ismember(CCF_labels(:,4),'Right Hemisphere'); 
-        else 
-            hemlog = ones(size(Conn,1),1);
+        reghemstr  = ip.Results.init_path{i};
+        reghemcell = split(reghemstr, '_');
+        % Match by region abbreviation
+        reglog = ismember(CCF_labels(:, 1), reghemcell{1});
+        % Match by hemisphere
+        if strcmp(reghemcell{2}, 'L')
+            hemlog = ismember(CCF_labels(:, 4), 'Left Hemisphere');
+        elseif strcmp(reghemcell{2}, 'R')
+            hemlog = ismember(CCF_labels(:, 4), 'Right Hemisphere');
+        else
+            hemlog = ones(size(Conn, 1), 1);  % both hemispheres
         end
         init_path((reglog + hemlog) == 2) = 1;
     end
 elseif isnan(mousedata_struct.(ip.Results.study).seed)
-    %init_path = logical(mousedata_struct.(ip.Results.study).data(:,1));
-    init_path = mousedata_struct.(ip.Results.study).data(:,1);
-    mean_nz = mean(nonzeros(init_path));
-    init_path = init_path ./ mean_nz; % For IbaP301S study where seed is not specified and data is nonbinary at t=1
-    init_path = DataToCCF(init_path,ip.Results.study,matdir);
+    % Case B: study has no fixed seed; use first time point as continuous seed
+    init_path = mousedata_struct.(ip.Results.study).data(:, 1);
+    mean_nz   = mean(nonzeros(init_path));
+    init_path = init_path ./ mean_nz;  % normalize so mean non-zero = 1
+    init_path = DataToCCF(init_path, ip.Results.study, matdir);
 else
+    % Case C: standard binary seed from the study
     init_path = logical(mousedata_struct.(ip.Results.study).seed);
-    init_path = DataToCCF(init_path,ip.Results.study,matdir);
+    init_path = DataToCCF(init_path, ip.Results.study, matdir);
 end
-beta_new = ip.Results.beta * ip.Results.time_scale;
+
+% =========================================================================
+% SECTION 6: Compute the initial tau concentration (init_rescale_n)
+%
+% We want the total tau at seeded regions at t=0 to equal init_rescale:
+%   N(0) + M(N(0)) = init_rescale
+%   N(0) + gamma1_new * N(0)^2 / (beta_new - gamma2 * N(0)) = init_rescale
+%
+% This is solved numerically with fsolve.  The result init_rescale_n is the
+% initial SOLUBLE tau value N(0) such that the total tau (N+M) equals the
+% desired init_rescale.
+% =========================================================================
+beta_new   = ip.Results.beta   * ip.Results.time_scale;
 gamma1_new = ip.Results.gamma1 * ip.Results.time_scale;
 gamma2_new = ip.Results.gamma2 * ip.Results.time_scale;
-taufun = @(x) ip.Results.init_rescale - (x +...
-    (gamma1_new * x.^2)./(beta_new - gamma2_new * x));
-options_taufun = optimset('TolFun',ip.Results.fsolvetol,'Display','off');
-init_rescale_n =fsolve(taufun,0,options_taufun); %2e-2;
-%for i=1:length(init_path)
- id_nan=isnan(init_path);
- init_path(id_nan)=0;
-%  end
-% endin
-%init_path
-init_tau = init_rescale_n * init_path;
-%init_tau=ip.Results.init_rescale*init_path;
+
+% Nonlinear equation: init_rescale = N + M(N)
+taufun = @(x) ip.Results.init_rescale - (x + ...
+    (gamma1_new * x.^2) ./ (beta_new - gamma2_new * x));
+options_taufun   = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
+init_rescale_n   = fsolve(taufun, 0, options_taufun);  % initial N_0
+
+% =========================================================================
+% SECTION 7: Select the connectome subset and set up network data structures
+%
+% The full CCF has 426 regions.  We can restrict to a biologically
+% meaningful subgraph (e.g. hippocampus + piriform + RSP, or the full graph).
+% After subsetting, nroi is the number of active regions.
+% =========================================================================
+
+% Replace NaN seed values with 0 (unmeasured regions)
+id_nan = isnan(init_path);
+init_path(id_nan) = 0;
+
+% Scale init_path so that non-zero regions start with init_rescale_n
+init_tau = init_rescale_n * init_path;  % [nroi_full x 1] initial soluble tau
+
+% Select the subset of brain regions based on connectome_subset parameter
 switch ip.Results.connectome_subset
     case 'Hippocampus'
-        inds = ismember(CCF_labels(:,3),'Hippocampus');
+        inds = ismember(CCF_labels(:, 3), 'Hippocampus');
     case 'Hippocampus+PC+RSP'
-        inds_hipp = ismember(CCF_labels(:,3),'Hippocampus');
-        inds_pc = ismember(CCF_labels(:,1),'Piriform area');
-        inds_rsp = ismember(CCF_labels(:,3),'Retrosplenial Area');
+        inds_hipp = ismember(CCF_labels(:, 3), 'Hippocampus');
+        inds_pc   = ismember(CCF_labels(:, 1), 'Piriform area');
+        inds_rsp  = ismember(CCF_labels(:, 3), 'Retrosplenial Area');
         inds = logical(inds_hipp + inds_pc + inds_rsp);
     case 'RH'
-        inds = ismember(CCF_labels(:,4),'Right Hemisphere');
+        inds = ismember(CCF_labels(:, 4), 'Right Hemisphere');
     case 'LH'
-        inds = ismember(CCF_labels(:,4),'Left Hemisphere');
+        inds = ismember(CCF_labels(:, 4), 'Left Hemisphere');
     otherwise
-        inds = logical(ones(size(Conn,1),1)); %#ok<LOGL> 
+        inds = logical(ones(size(Conn, 1), 1));  % use all regions
 end
-Adj = Adj(inds,inds);
-Conn = Conn(inds,inds);
-Vol = DefaultAtlas.volumes(inds);
-init_tau = init_tau(inds);
-nroi = size(Adj,1);
-regnamecell = CCF_labels(inds,:);
-regnames = cell(size(regnamecell,1),1);
+
+% Apply the subset mask to all region-indexed arrays
+Adj      = Adj(inds, inds);       % binary adjacency [nroi x nroi]
+Conn     = Conn(inds, inds);      % weighted connectivity [nroi x nroi]
+Vol      = DefaultAtlas.volumes(inds);  % brain region volumes [nroi x 1]
+init_tau = init_tau(inds);        % initial tau [nroi x 1]
+nroi     = size(Adj, 1);          % number of active regions
+
+% Build human-readable region name labels (region name + hemisphere suffix)
+regnamecell = CCF_labels(inds, :);
+regnames    = cell(size(regnamecell, 1), 1);
 for i = 1:length(regnames)
-    regname = regnamecell{i,1};
-    reghem = regnamecell{i,4};
-    if strcmp(reghem,'Right Hemisphere')
+    regname = regnamecell{i, 1};
+    reghem  = regnamecell{i, 4};
+    if strcmp(reghem, 'Right Hemisphere')
         regnames{i} = [regname ' RH'];
     else
         regnames{i} = [regname ' LH'];
     end
 end
 
+% =========================================================================
+% SECTION 8: Set up the time vector
+% =========================================================================
 if isempty(ip.Results.trange)
-    t = 0:ip.Results.dt:ip.Results.T;
+    t = 0 : ip.Results.dt : ip.Results.T;
 else
-    t = ip.Results.trange;
+    t = ip.Results.trange;  % use the custom non-uniform grid
 end
-   nt=length(t);
-  N=zeros(nroi,nt);
- 
-  N(:,1)=init_tau(:);
-  % for i=1:nroi
-  %     if N(i,1)==0
-  %         N(i,1)=1e-4;
-  %     end
-  % end
-    seedregions_ = (N(:,1) > 0);  %    (N(:,1) > 1e-4); % 
- 
- i_zero=N(:,1)==0;   %init_tau==0;
+nt = length(t);
 
+% =========================================================================
+% SECTION 9: Allocate solution and auxiliary arrays
+% =========================================================================
+
+% N: soluble tau at each region over time [nroi x nt]
+N        = zeros(nroi, nt);
+N(:, 1)  = init_tau(:);          % set initial condition
+
+% seedregions_: logical index of regions that are initially seeded with tau
+seedregions_ = (N(:, 1) > 0);
+
+% i_zero: regions with ZERO initial tau (non-seeded regions)
+% Used for visualization: tracks how tau INVADES previously unaffected regions
+i_zero = (N(:, 1) == 0);
+
+% Regional_edge_mass: placeholder for per-edge tau mass [nroi x nroi x nt x 4]
+% (currently disabled; '4' would be: r1_n_mass, r1_m_mass, r2_n_mass, r2_m_mass)
 Regional_edge_mass = zeros([nroi, nroi, nt, 4]);
 
- netw_flux_0= zeros([nroi,size(N)]);
-  netw_flux_L= zeros([nroi,size(N)]);
-  %Mass_edge=zeros([nroi,nroi,nt]);
-  n_ss0=zeros([nroi,nroi,nt]);
-  %res_max=zeros(1,nt);
- Gamma1=gamma1_new*ones(nroi,nt);
- %Gamma1_der=zeros(nroi,nt);
-F_source_edge=zeros([nroi,nroi,nt]);
-  gamma_time_dip_roi=[2 6 7 14 2+15 6+15 7+15 14+15];
-  %gamma_time_dip_roi=[1:nroi]
-  t_gamma=repmat(t, length(gamma_time_dip_roi),1);
-%  %size(t_gamma)
- Gamma1(gamma_time_dip_roi, :)=gamma1_new*ones(length(gamma_time_dip_roi),nt) +ip.Results.gamma1_dt*ip.Results.time_scale*t_gamma;
-  %Gamma1_der(gamma_time_dip_roi, :)=ip.Results.gamma1_dt*ip.Results.time_scale*ones(length(gamma_time_dip_roi),nt);
-Gamma_app=gamma1_new*ones(nroi,1);
- Gamma_app(gamma_time_dip_roi, 1)=gamma1_new*ones(length(gamma_time_dip_roi),1) +ip.Results.gamma1_dt*ip.Results.time_scale*t(1)/2;
+% netw_flux_0: flux at soma end (x=0) for each edge at each time step [nroi x nroi x nt]
+% netw_flux_L: flux at synapse end (x=L) for each edge at each time step [nroi x nroi x nt]
+netw_flux_0 = zeros([nroi, size(N)]);  % note: size is [nroi x nroi x nt]
+netw_flux_L = zeros([nroi, size(N)]);
 
-  Lambda1=ip.Results.lambda1*ones(nroi,nt);
+% n_ss0: shooting parameter n(0) for each edge, at each time step [nroi x nroi x nt]
+% Stored to warm-start fsolve at the next time step (significant speedup)
+n_ss0 = zeros([nroi, nroi, nt]);
 
- lambda_time_dip_roi=[2 6 7 14 2+15 6+15 7+15 14+15];
-  %lambda_time_dip_roi=[1:nroi]
-  t_lambda=repmat(t, length(lambda_time_dip_roi),1);
+% F_source_edge: cumulative distributed source on each edge [nroi x nroi x nt]
+F_source_edge = zeros([nroi, nroi, nt]);
 
- Lambda1(lambda_time_dip_roi, :)=ip.Results.lambda1*ones(length(lambda_time_dip_roi),nt) +ip.Results.lambda_dt*t_lambda;
-  %Lambda1_der(lambda_time_dip_roi, :)=ip.Results.lambda_dt*ones(length(lambda_time_dip_roi),nt);
-Lambda1_app=ip.Results.lambda1*ones(nroi,1);
- Lambda1_app(gamma_time_dip_roi, 1)=ip.Results.lambda1*ones(length(lambda_time_dip_roi),1) +ip.Results.lambda_dt*t(1)/2;
+% der: placeholder for derivative diagnostics (not currently filled)
+der = zeros(nroi, nt);
 
-N_adj_0=[init_rescale_n 0 init_rescale_n]; %N(:,1).*Adj;
-N_adj_L=[0 init_rescale_n init_rescale_n];
-%Adj
-%Idx_netw_x0=logical(N(:,1)).*Adj;
-Idx_netw_x0=logical(init_tau).*Adj;
+% =========================================================================
+% SECTION 10: Time-dependent rate coefficient arrays
+%
+% Gamma1 (aggregation rate) and Lambda1 (AIS permeability) can vary with
+% time in specific brain regions.  By default they are constant, but a
+% linear time ramp can be added to a designated subset of ROIs.
+%
+% gamma_time_dip_roi = [2,6,7,14, 2+15,6+15,7+15,14+15]: indices of
+% specific hippocampal + cortical ROIs where the time-dependent effect
+% is applied (numbered within the chosen connectome subset).
+% =========================================================================
 
-Idx_netw_x0_0= [ 1 1 1];     %logical(N(:,1)).*Adj;
-%Idx_netw_x0=logical(Idx_netw_x0+Idx_netw_x0.')
-Idx_netw_xL_0=logical([1 1 1].');     %logical(N(:,1));
-Idx_netw_xL= logical(init_tau);       %logical(N(:,1));
+% Gamma1 matrix: [nroi x nt], initially uniform at gamma1_new
+Gamma1 = gamma1_new * ones(nroi, nt);
 
-Gamma1_x0_0=gamma1_new*ones(1,3);     %Gamma1(:,1).*Adj;
-%Gamma1_der_x0_0=Gamma1_der(:,1).*Adj;
-Lambda1_x0_0=ip.Results.lambda1*ones(1,3);       %Lambda1(:,1).*Adj;
-%f_ss0=0.0001*ones(nroi);
-f_ss0=[0.0001 0.0001  0.0001];
+% Apply time ramp to specific ROIs: Gamma1(roi, t) = gamma1_new + gamma1_dt * t
+gamma_time_dip_roi = [2 6 7 14 2+15 6+15 7+15 14+15];
+t_gamma = repmat(t, length(gamma_time_dip_roi), 1);  % [length(rois) x nt]
+Gamma1(gamma_time_dip_roi, :) = gamma1_new * ones(length(gamma_time_dip_roi), nt) + ...
+                                 ip.Results.gamma1_dt * ip.Results.time_scale * t_gamma;
 
+% Gamma_app: midpoint-method approximation of Gamma1 at t+dt/2 for first 50 steps
+Gamma_app = gamma1_new * ones(nroi, 1);
+Gamma_app(gamma_time_dip_roi, 1) = gamma1_new * ones(length(gamma_time_dip_roi), 1) + ...
+                                    ip.Results.gamma1_dt * ip.Results.time_scale * t(1) / 2;
+
+% Lambda1 matrix: [nroi x nt], initially uniform at lambda1
+Lambda1 = ip.Results.lambda1 * ones(nroi, nt);
+
+lambda_time_dip_roi = [2 6 7 14 2+15 6+15 7+15 14+15];
+t_lambda = repmat(t, length(lambda_time_dip_roi), 1);
+Lambda1(lambda_time_dip_roi, :) = ip.Results.lambda1 * ones(length(lambda_time_dip_roi), nt) + ...
+                                   ip.Results.lambda_dt * t_lambda;
+
+% Lambda1_app: midpoint approximation of Lambda1 for the first 50 steps
+Lambda1_app = ip.Results.lambda1 * ones(nroi, 1);
+Lambda1_app(gamma_time_dip_roi, 1) = ip.Results.lambda1 * ones(length(lambda_time_dip_roi), 1) + ...
+                                      ip.Results.lambda_dt * t(1) / 2;
+
+% =========================================================================
+% SECTION 11: Compute the INITIAL flux at t=0
+%
+% Before time-stepping begins, we need J_0 and J_L at t=0.
+% The initial call uses a simplified "Single_bis" connectome (3 representative
+% edge types: seed→nonseed, nonseed→seed, seed→seed) rather than the full
+% network.  This is because at t=0, tau is only present in seeded regions,
+% so only three distinct boundary condition combinations are possible.
+%
+% N_adj_0 = [init_rescale_n, 0, init_rescale_n]:
+%   Representative tau_x0 values for [seed→nonseed, nonseed→seed, seed→seed]
+% N_adj_L = [0, init_rescale_n, init_rescale_n]:
+%   Representative tau_xL values for the same three cases
+%
+% The results (J_0, J_L scalars for each case) are then broadcast back
+% onto the full [nroi x nroi] flux matrices using Adj.
+% =========================================================================
+
+% Three representative edge cases for t=0
+N_adj_0 = [init_rescale_n 0 init_rescale_n];  % tau_x0 for [seed→no, no→seed, seed→seed]
+N_adj_L = [0 init_rescale_n init_rescale_n];  % tau_xL for same three cases
+
+% Adjacency indicators for flux computation:
+% Idx_netw_x0: which edges have a seeded SOURCE region (tau != 0 at soma end)
+Idx_netw_x0 = logical(init_tau) .* Adj;  % [nroi x nroi]
+
+% Simplified 3-edge indicators for the initial call
+Idx_netw_x0_0 = [1 1 1];   % all three representative edges are "active"
+Idx_netw_xL_0 = logical([1 1 1].');
+% For ongoing calls: Idx_netw_xL = logical(init_tau) tracks which target regions have tau
+Idx_netw_xL = logical(init_tau);
+
+% Initial gamma1 and lambda1 for the 3-edge representative call
+Gamma1_x0_0   = gamma1_new * ones(1, 3);
+Lambda1_x0_0  = ip.Results.lambda1 * ones(1, 3);
+f_ss0         = [0.0001 0.0001 0.0001];  % initial guess for n(0) on each representative edge
+
+% Full adjacency matrix (from CSV, not the subsetted Conn) for the NetworkFluxCalculator
 Adj_in = readmatrix([matdir filesep 'mouse_adj_matrix_19_01.csv']);
 
- fprintf('Flux calculation at initial time \n') 
- tic
- 
-  [J_0,J_L,~,F_source_edge_0,n_ss_init,~,~]=NetworkFluxCalculator_Neu(N_adj_0,N_adj_L,f_ss0,Adj_in,'beta',ip.Results.beta,...
-                                    'delta',ip.Results.delta,'F_edge_0',ip.Results.F_edge_0,...
-                                    'epsilon',ip.Results.epsilon,...
-                                    'frac',ip.Results.frac,...
-                                    'lambda1_x0',Lambda1_x0_0,...
-                                    'lambda1_xL',Lambda1_x0_0.',...
-                                    'gamma1_x0',Gamma1_x0_0,...
-                                    'gamma1_xL',Gamma1_x0_0.',...
-                                    'idx_netw_x0',Idx_netw_x0_0,'idx_netw_xL',Idx_netw_xL_0,'frac',ip.Results.frac,...
-                                    'L_int',ip.Results.L_int,...
-                                    'L1',ip.Results.L1,...
-                                    'L_ais',ip.Results.L_ais,...
-                                    'L_syn',ip.Results.L_syn,...
-                                    'resmesh',ip.Results.resmesh,...
-                                    'reltol',ip.Results.reltol,...
-                                    'abstol',ip.Results.abstol,...
-                                    'fsolvetol',ip.Results.fsolvetol, ...
-                                    'axon_div',ip.Results.axon_div,...
-                                    'time_scale', ip.Results.time_scale, 'connectome_subset','Single_bis', ...
-                                    'mu_r_0',ip.Results.mu_r_0,'mu_r_L',ip.Results.mu_r_L, 'mu_u_0',ip.Results.mu_u_0, 'mu_u_L',ip.Results.mu_u_L ); %compute the steady state  network flux at time t0
+fprintf('Flux calculation at initial time \n')
+tic
 
-  %res_max(1,1);
- netw_flux_0(seedregions_,:,1)=J_0(1,1)*Adj(seedregions_,:);
-netw_flux_L(seedregions_,:,1)=J_L(1,1)*Adj(seedregions_,:);
-netw_flux_0(:,seedregions_,1)=J_0(1,2)*Adj(:,seedregions_);
-netw_flux_L(:,seedregions_,1)=J_L(1,2)*Adj(:,seedregions_);
-netw_flux_0(seedregions_,seedregions_,1)=J_0(1,3)*Adj(seedregions_,seedregions_);
-netw_flux_L(seedregions_,seedregions_,1)=J_L(1,3)*Adj(seedregions_,seedregions_);
-% seedregions_
-% Adj(seedregions_,seedregions_)
-% netw_flux_0(:,:,1)
-% netw_flux_L(:,:,1)
-%Mass_edge(seedregions_,:,1)=Mass_edge_0(1,1)*Adj(seedregions_,:);
-%Mass_edge(:,seedregions_,1)=Mass_edge_0(1,2)*Adj(:,seedregions_);
-%Mass_edge(seedregions_,seedregions_,1)=Mass_edge_0(1,3)*Adj(seedregions_,seedregions_);
-F_source_edge(seedregions_,:,1)=F_source_edge_0(1,1)*Adj(seedregions_,:);
-F_source_edge(:,seedregions_,1)=F_source_edge_0(1,2)*Adj(:,seedregions_);
-F_source_edge(seedregions_,seedregions_,1)=F_source_edge_0(1,3)*Adj(seedregions_,seedregions_);
+% Compute the 3 representative fluxes at t=0
+[J_0, J_L, ~, F_source_edge_0, n_ss_init, ~, ~] = ...
+    NetworkFluxCalculator_Neu(N_adj_0, N_adj_L, f_ss0, Adj_in, ...
+                              'beta',              ip.Results.beta,             ...
+                              'delta',             ip.Results.delta,            ...
+                              'F_edge_0',          ip.Results.F_edge_0,         ...
+                              'epsilon',           ip.Results.epsilon,          ...
+                              'frac',              ip.Results.frac,             ...
+                              'lambda1_x0',        Lambda1_x0_0,               ...
+                              'lambda1_xL',        Lambda1_x0_0.',             ...
+                              'gamma1_x0',         Gamma1_x0_0,                ...
+                              'gamma1_xL',         Gamma1_x0_0.',              ...
+                              'idx_netw_x0',       Idx_netw_x0_0,              ...
+                              'idx_netw_xL',       Idx_netw_xL_0,              ...
+                              'L_int',             ip.Results.L_int,           ...
+                              'L1',                ip.Results.L1,              ...
+                              'L_ais',             ip.Results.L_ais,           ...
+                              'L_syn',             ip.Results.L_syn,           ...
+                              'resmesh',           ip.Results.resmesh,         ...
+                              'reltol',            ip.Results.reltol,          ...
+                              'abstol',            ip.Results.abstol,          ...
+                              'fsolvetol',         ip.Results.fsolvetol,       ...
+                              'axon_div',          ip.Results.axon_div,        ...
+                              'time_scale',        ip.Results.time_scale,      ...
+                              'connectome_subset', 'Single_bis',               ...
+                              'mu_r_0',            ip.Results.mu_r_0,          ...
+                              'mu_r_L',            ip.Results.mu_r_L,          ...
+                              'mu_u_0',            ip.Results.mu_u_0,          ...
+                              'mu_u_L',            ip.Results.mu_u_L);
 
-n_ss0(seedregions_,:,1)=n_ss_init(1,1)*Adj(seedregions_,:);
-n_ss0(:,seedregions_,1)=n_ss_init(1,2)*Adj(:,seedregions_);
-n_ss0(seedregions_,seedregions_,1)=n_ss_init(1,3)*Adj(seedregions_,seedregions_);
+% ------------------------------------------------------------------
+% Broadcast the 3 representative flux values onto the full flux matrices.
+%
+% J_0(1,1), J_0(1,2), J_0(1,3) are the fluxes for:
+%   case 1: seed→nonseed edge
+%   case 2: nonseed→seed edge
+%   case 3: seed→seed edge
+%
+% We fill netw_flux_0 and netw_flux_L accordingly using seedregions_:
+%   seedregions_ → seeded source regions
+%   ~seedregions_ (via negation) → non-seeded source regions
+% ------------------------------------------------------------------
+netw_flux_0(seedregions_,  :,          1) = J_0(1,1) * Adj(seedregions_, :);
+netw_flux_L(seedregions_,  :,          1) = J_L(1,1) * Adj(seedregions_, :);
+netw_flux_0(:,  seedregions_,          1) = J_0(1,2) * Adj(:, seedregions_);
+netw_flux_L(:,  seedregions_,          1) = J_L(1,2) * Adj(:, seedregions_);
+netw_flux_0(seedregions_, seedregions_, 1) = J_0(1,3) * Adj(seedregions_, seedregions_);
+netw_flux_L(seedregions_, seedregions_, 1) = J_L(1,3) * Adj(seedregions_, seedregions_);
 
- toc
-der=zeros(nroi,nt);
+% Similarly broadcast the distributed source and the shooting parameter
+F_source_edge(seedregions_,  :,          1) = F_source_edge_0(1,1) * Adj(seedregions_, :);
+F_source_edge(:,  seedregions_,          1) = F_source_edge_0(1,2) * Adj(:, seedregions_);
+F_source_edge(seedregions_, seedregions_, 1) = F_source_edge_0(1,3) * Adj(seedregions_, seedregions_);
 
-for h=1:  (nt-1)
-  
-  fprintf('Time step %d/%d\n',h,nt-1) 
- %tic
+n_ss0(seedregions_,  :,          1) = n_ss_init(1,1) * Adj(seedregions_, :);
+n_ss0(:,  seedregions_,          1) = n_ss_init(1,2) * Adj(:, seedregions_);
+n_ss0(seedregions_, seedregions_, 1) = n_ss_init(1,3) * Adj(seedregions_, seedregions_);
 
- %m_t= Gamma1(:,h).*N(:,h).*(2*beta_new-ip.Results.gamma2.*N(:,h)./(beta_new-ip.Results.gamma2.*N(:,h)).^2);
- m_t= Gamma1(:,h).*N(:,h).*((2*beta_new-ip.Results.gamma2.*N(:,h))./(beta_new-ip.Results.gamma2.*N(:,h)).^2);
- 
- 
- %F_in=time_scale.*netw_flux(:,:,h);
- F_in=netw_flux_L(:,:,h);
- F_out=netw_flux_0(:,:,h);
-F_out=F_out.';
+toc
 
- if h<=50 % previously 5
-     N_app=N(:,h)+(1./(Vol.*(1+m_t))).*( ( diag((Conn.'*F_in)) - diag((Conn*F_out))) ).*((t(h+1)-t(h))/2);
-     %Fun_app=(1./(Vol.*(1+m_t))).*( ( diag((Conn.'*F_in)) - diag((Conn*F_out))) );
-     N_adj_app=N_app.*Adj;
+% =========================================================================
+% SECTION 12: Main time-stepping loop
+%
+% At each step h we integrate:
+%   (1 + m_t_i) * dN_i/dt = (1/Vol_i) * [flux_in_i - flux_out_i] + alpha*N_i
+%
+% where:
+%   m_t_i = Gamma1_i * N_i * (2*beta - gamma2*N_i) / (beta - gamma2*N_i)^2
+%           = dM/dN evaluated at current N_i.  This is the "chain rule factor"
+%           that accounts for the fact that total tau changes = N changes + M changes.
+%
+%   flux_in_i  = sum_j Conn_ji * netw_flux_L(j,i,h)   (J_L summed over all sources j)
+%   flux_out_i = sum_j Conn_ij * netw_flux_0(i,j,h)   (J_0 summed over all targets j)
+%
+% The diag() calls efficiently extract the diagonal of the matrix product,
+% which is the sum over the connecting dimension:
+%   diag(Conn.' * F_in) = [sum_j Conn_ji * F_in_ji] for each i
+%   diag(Conn  * F_out) = [sum_j Conn_ij * F_out_ij] for each i
+% =========================================================================
+for h = 1:(nt-1)
 
-  Gamma1_x0_app=Gamma_app.*Adj;
-  %Gamma1_der_x0_h1=Gamma1_der(:,h+1).*Adj;
-  Lambda1_x0_app=Lambda1_app.*Adj;
-[F_out_app,F_in_app,~,~,~,~,~]=NetworkFluxCalculator_Neu(N_adj_app,N_app,n_ss0(:,:,h),Adj_in,'beta',ip.Results.beta,...
-                                    'delta',ip.Results.delta,'F_edge_0',ip.Results.F_edge_0,...
-                                    'epsilon',ip.Results.epsilon,...
-                                    'frac',ip.Results.frac,...
-                                    'lambda1_x0',Lambda1_x0_app,...
-                                    'lambda1_xL',Lambda1_app,...
-                                    'gamma1_x0',Gamma1_x0_app,...
-                                    'gamma1_xL',Gamma_app,...
-                                    'idx_netw_x0',Idx_netw_x0,'idx_netw_xL',Idx_netw_xL,'frac',ip.Results.frac,...
-                                    'L_int',ip.Results.L_int,...
-                                    'L1',ip.Results.L1,...
-                                    'L_ais',ip.Results.L_ais,...
-                                    'L_syn',ip.Results.L_syn,...
-                                    'resmesh',ip.Results.resmesh,...
-                                    'reltol',ip.Results.reltol,...
-                                    'abstol',ip.Results.abstol,...
-                                    'fsolvetol',ip.Results.fsolvetol, ...
-                                    'axon_div',ip.Results.axon_div,...
-                                    'time_scale', ip.Results.time_scale, 'connectome_subset',ip.Results.connectome_subset, ...
-                                    'mu_r_0',ip.Results.mu_r_0,'mu_r_L',ip.Results.mu_r_L, 'mu_u_0',ip.Results.mu_u_0, 'mu_u_L',ip.Results.mu_u_L ); %compute the steady state  network flux at time t0
-F_out_app=F_out_app.';
-%m_t_app=Gamma_app.*N_app.*(2*beta_new-ip.Results.gamma2.*N_app./(beta_new-ip.Results.gamma2.*N_app).^2);
-m_t_app=Gamma_app.*N_app.*((2*beta_new-ip.Results.gamma2.*N_app)./(beta_new-ip.Results.gamma2.*N_app).^2);
+    fprintf('Time step %d/%d\n', h, nt-1)
 
-Fun_app_2=(1./(Vol.*(1+m_t_app))).*( ( diag((Conn.'*F_in_app)) - diag((Conn*F_out_app))) );
-N(:,h+1)=N(:,h)+(Fun_app_2).*((t(h+1)-t(h)));
- else
- N(:,h+1)=N(:,h)+(1./(Vol.*(1+m_t))).*( ( diag((Conn.'*F_in)) - diag((Conn*F_out))) ).*(t(h+1)-t(h));  %ip.Results.dt  ; %((diag((Conn.'*F_in)) - diag((Conn*F_out)))*k + beta*m(:,h)*k-gamma1*(n(:,h).*n(:,h))*k-gamma2*(n(:,h).*m(:,h))*k);
- end
+    % ------------------------------------------------------------------
+    % m_t: derivative dM/dN at current N (from quasi-static equilibrium M(N))
+    % M(N) = gamma1 * N^2 / (beta - gamma2*N)
+    % dM/dN = gamma1*N*(2*beta - gamma2*N) / (beta - gamma2*N)^2
+    % ------------------------------------------------------------------
+    m_t = Gamma1(:, h) .* N(:, h) .* ...
+          ((2*beta_new - ip.Results.gamma2 .* N(:, h)) ./ ...
+           (beta_new   - ip.Results.gamma2 .* N(:, h)).^2);
 
- N(:,h+1) = N(:,h+1) + ip.Results.alpha*(t(h+1)-t(h))*N(:,h);
- 
-  N_adj_h1=N(:,h+1).*Adj;
- 
-  Gamma1_x0_h1=Gamma1(:,h+1).*Adj;
-  %Gamma1_der_x0_h1=Gamma1_der(:,h+1).*Adj;
-  Lambda1_x0_h1=Lambda1(:,h+1).*Adj;
+    % ------------------------------------------------------------------
+    % Set up flux arrays for this time step:
+    %   F_in(j,i)  = netw_flux_L(j,i,h)  – tau arriving at i from axon j→i
+    %   F_out(i,j) = netw_flux_0(i,j,h)  – tau leaving i via axon i→j (at soma end)
+    % Note: F_out is transposed so that diag(Conn * F_out) gives row-sums.
+    % ------------------------------------------------------------------
+    F_in  = netw_flux_L(:, :, h);
+    F_out = netw_flux_0(:, :, h);
+    F_out = F_out.';  % transpose: F_out(j,i) is now flux ON edge j→i at source end
 
-   fprintf('Flux calculation \n') 
+    if h <= 50
+        % ==============================================================
+        % MIDPOINT METHOD (2nd-order Runge-Kutta) for first 50 steps
+        %
+        % Step 1 – Predictor: advance N by half a time step using current fluxes.
+        %   N_app = N_h + (1/(Vol*(1+m_t))) * (flux_in - flux_out) * (dt/2)
+        % ==============================================================
+        N_app = N(:, h) + (1 ./ (Vol .* (1 + m_t))) .* ...
+                (diag(Conn.' * F_in) - diag(Conn * F_out)) .* ((t(h+1) - t(h)) / 2);
 
-  tic
+        % Edge-indexed tau matrix at the midpoint N_app (for flux re-computation)
+        N_adj_app = N_app .* Adj;
 
-  % Regional_edge_mass(:,:,h+1,:)
-  % Mass_edge(:,:,h+1)
+        % Gamma1 and Lambda1 at the midpoint (use the pre-computed _app values)
+        Gamma1_x0_app  = Gamma_app .* Adj;
+        Lambda1_x0_app = Lambda1_app .* Adj;
 
-[netw_flux_0(:,:,h+1),netw_flux_L(:,:,h+1),~,F_source_edge(:,:,h+1),n_ss0(:,:,h+1),~,~]=NetworkFluxCalculator_Neu(N_adj_h1,N(:,h+1),n_ss0(:,:,h),Adj_in,'beta',ip.Results.beta,...
-                                    'delta',ip.Results.delta,'F_edge_0',ip.Results.F_edge_0,...
-                                    'epsilon',ip.Results.epsilon,...
-                                    'frac',ip.Results.frac,...
-                                    'lambda1_x0',Lambda1_x0_h1,...
-                                    'lambda1_xL',Lambda1(:,h+1),...
-                                    'gamma1_x0',Gamma1_x0_h1,...
-                                    'gamma1_xL',Gamma1(:,h+1),...
-                                    'idx_netw_x0',Idx_netw_x0,'idx_netw_xL',Idx_netw_xL,'frac',ip.Results.frac,...
-                                    'L_int',ip.Results.L_int,...
-                                    'L1',ip.Results.L1,...
-                                    'L_ais',ip.Results.L_ais,...
-                                    'L_syn',ip.Results.L_syn,...
-                                    'resmesh',ip.Results.resmesh,...
-                                    'reltol',ip.Results.reltol,...
-                                    'abstol',ip.Results.abstol,...
-                                    'fsolvetol',ip.Results.fsolvetol, ...
-                                    'axon_div',ip.Results.axon_div,...
-                                    'time_scale', ip.Results.time_scale, 'connectome_subset',ip.Results.connectome_subset, ...
-                                    'mu_r_0',ip.Results.mu_r_0,'mu_r_L',ip.Results.mu_r_L, 'mu_u_0',ip.Results.mu_u_0, 'mu_u_L',ip.Results.mu_u_L ); %compute the steady state  network flux at time t0
+        % Step 2 – Compute fluxes at the predictor (midpoint) state N_app
+        [F_out_app, F_in_app, ~, ~, ~, ~, ~] = ...
+            NetworkFluxCalculator_Neu(N_adj_app, N_app, n_ss0(:, :, h), Adj_in, ...
+                                      'beta',              ip.Results.beta,             ...
+                                      'delta',             ip.Results.delta,            ...
+                                      'F_edge_0',          ip.Results.F_edge_0,         ...
+                                      'epsilon',           ip.Results.epsilon,          ...
+                                      'frac',              ip.Results.frac,             ...
+                                      'lambda1_x0',        Lambda1_x0_app,              ...
+                                      'lambda1_xL',        Lambda1_app,                 ...
+                                      'gamma1_x0',         Gamma1_x0_app,               ...
+                                      'gamma1_xL',         Gamma_app,                   ...
+                                      'idx_netw_x0',       Idx_netw_x0,                ...
+                                      'idx_netw_xL',       Idx_netw_xL,                ...
+                                      'L_int',             ip.Results.L_int,           ...
+                                      'L1',                ip.Results.L1,              ...
+                                      'L_ais',             ip.Results.L_ais,           ...
+                                      'L_syn',             ip.Results.L_syn,           ...
+                                      'resmesh',           ip.Results.resmesh,         ...
+                                      'reltol',            ip.Results.reltol,          ...
+                                      'abstol',            ip.Results.abstol,          ...
+                                      'fsolvetol',         ip.Results.fsolvetol,       ...
+                                      'axon_div',          ip.Results.axon_div,        ...
+                                      'time_scale',        ip.Results.time_scale,      ...
+                                      'connectome_subset', ip.Results.connectome_subset, ...
+                                      'mu_r_0',            ip.Results.mu_r_0,          ...
+                                      'mu_r_L',            ip.Results.mu_r_L,          ...
+                                      'mu_u_0',            ip.Results.mu_u_0,          ...
+                                      'mu_u_L',            ip.Results.mu_u_L);
+        F_out_app = F_out_app.';
 
+        % m_t at the midpoint state (same formula, evaluated at N_app)
+        m_t_app = Gamma_app .* N_app .* ...
+                  ((2*beta_new - ip.Results.gamma2 .* N_app) ./ ...
+                   (beta_new   - ip.Results.gamma2 .* N_app).^2);
 
- toc
+        % Step 3 – Corrector: take a full step using midpoint fluxes
+        Fun_app_2 = (1 ./ (Vol .* (1 + m_t_app))) .* ...
+                    (diag(Conn.' * F_in_app) - diag(Conn * F_out_app));
+        N(:, h+1) = N(:, h) + Fun_app_2 .* (t(h+1) - t(h));
 
-end
+    else
+        % ==============================================================
+        % FORWARD EULER (1st-order) for steps h > 50
+        % Acceptable once N is varying smoothly.
+        % N(h+1) = N(h) + (1/(Vol*(1+m_t))) * net_flux * dt
+        % ==============================================================
+        N(:, h+1) = N(:, h) + (1 ./ (Vol .* (1 + m_t))) .* ...
+                    (diag(Conn.' * F_in) - diag(Conn * F_out)) .* (t(h+1) - t(h));
+    end
 
- M=(Gamma1.* N.^2)./(beta_new-ip.Results.gamma2 * N);
- R_Edge_Mass = 0; % Regional_edge_mass;
-  
+    % ------------------------------------------------------------------
+    % Apply the linear tau growth term (source of new tau at each node):
+    %   N_i(h+1) += alpha * dt * N_i(h)
+    % This models e.g. continuous tau production by neurons.
+    % ------------------------------------------------------------------
+    N(:, h+1) = N(:, h+1) + ip.Results.alpha * (t(h+1) - t(h)) * N(:, h);
+
+    % ------------------------------------------------------------------
+    % Compute fluxes at the NEW state N(:,h+1) for use in the next step.
+    %
+    % N_adj_h1(j,i) = N_j(h+1) * Adj(j,i): tau at source end of each active edge.
+    % Gamma1_x0_h1 and Lambda1_x0_h1: updated time-dependent rate matrices.
+    % n_ss0(:,:,h): warm-start guess (shooting params from the previous step).
+    % ------------------------------------------------------------------
+    N_adj_h1      = N(:, h+1) .* Adj;         % [nroi x nroi]: N at source end of each edge
+    Gamma1_x0_h1  = Gamma1(:, h+1) .* Adj;    % aggregation rate at source, per edge
+    Lambda1_x0_h1 = Lambda1(:, h+1) .* Adj;   % AIS permeability at source, per edge
+
+    fprintf('Flux calculation \n')
+    tic
+
+    % Solve the full-network steady-state axon BVP for N(:,h+1)
+    [netw_flux_0(:, :, h+1), netw_flux_L(:, :, h+1), ~, ...
+     F_source_edge(:, :, h+1), n_ss0(:, :, h+1), ~, ~] = ...
+        NetworkFluxCalculator_Neu(N_adj_h1, N(:, h+1), n_ss0(:, :, h), Adj_in, ...
+                                  'beta',              ip.Results.beta,             ...
+                                  'delta',             ip.Results.delta,            ...
+                                  'F_edge_0',          ip.Results.F_edge_0,         ...
+                                  'epsilon',           ip.Results.epsilon,          ...
+                                  'frac',              ip.Results.frac,             ...
+                                  'lambda1_x0',        Lambda1_x0_h1,              ...
+                                  'lambda1_xL',        Lambda1(:, h+1),            ...
+                                  'gamma1_x0',         Gamma1_x0_h1,               ...
+                                  'gamma1_xL',         Gamma1(:, h+1),             ...
+                                  'idx_netw_x0',       Idx_netw_x0,               ...
+                                  'idx_netw_xL',       Idx_netw_xL,               ...
+                                  'L_int',             ip.Results.L_int,           ...
+                                  'L1',                ip.Results.L1,              ...
+                                  'L_ais',             ip.Results.L_ais,           ...
+                                  'L_syn',             ip.Results.L_syn,           ...
+                                  'resmesh',           ip.Results.resmesh,         ...
+                                  'reltol',            ip.Results.reltol,          ...
+                                  'abstol',            ip.Results.abstol,          ...
+                                  'fsolvetol',         ip.Results.fsolvetol,       ...
+                                  'axon_div',          ip.Results.axon_div,        ...
+                                  'time_scale',        ip.Results.time_scale,      ...
+                                  'connectome_subset', ip.Results.connectome_subset, ...
+                                  'mu_r_0',            ip.Results.mu_r_0,          ...
+                                  'mu_r_L',            ip.Results.mu_r_L,          ...
+                                  'mu_u_0',            ip.Results.mu_u_0,          ...
+                                  'mu_u_L',            ip.Results.mu_u_L);
+    toc
+
+end  % time-stepping loop
+
+% =========================================================================
+% SECTION 13: Compute bound tau M from the quasi-static equilibrium formula
+%
+% M(N) = gamma1 * N^2 / (beta - gamma2 * N)
+%
+% This is the algebraic relationship that defines M as a function of N.
+% Because aggregation is fast relative to network spreading, M is always
+% in equilibrium with N (the aggregation ODE has been 'slaved').
+%
+% Gamma1 is the [nroi x nt] time-dependent aggregation rate matrix.
+% =========================================================================
+M = (Gamma1 .* N.^2) ./ (beta_new - ip.Results.gamma2 * N);
+
+% R_Edge_Mass is disabled (edge mass computation commented out).
+% Through Release/Uptake, Edge-Mass is always 0.
+R_Edge_Mass = 0;
+
 %{
+% =========================================================================
+% SECTION 14: (COMMENTED OUT) Mass conservation diagnostics and plots
+%
+% The code below was used during development to verify that the total tau
+% mass is conserved (up to the source terms alpha and F_edge).
+% It is left here as a reference but is not needed for production runs.
+% =========================================================================
 
-[Max_der, I_max_der]=max(der(:,1));
+[Max_der, I_max_der] = max(der(:,1));
+fprintf('I max der= %d\n', I_max_der)
+M = (Gamma1 .* N.^2) ./ (beta_new - ip.Results.gamma2 * N);
 
- fprintf('I max der= %d\n',I_max_der)
- M=(Gamma1.* N.^2)./(beta_new-ip.Results.gamma2 * N);
-  %M_approx=(Gamma1.* N_approx.^2)./(beta_new-ip.Results.gamma2 * N_approx);
+% Total node mass at each time step
+Mass_node = sum(Vol .* N, 1) + sum(Vol .* M, 1);
+fprintf('Total Node Mass = %d\n', Mass_node)
 
-     Mass_node = sum(Vol.*N,1)+sum(Vol.*M,1);
-    % size(Mass_node)
-     fprintf('Total Node Mass = %d\n',Mass_node)
-    Mass_tot_edge=zeros(1,nt);
-    for h=1:(nt)
-        Mass_tot_edge(1,h) = sum(Conn.*Mass_edge(:,:,h),'all');
-    end
-    fprintf('Total Edge Mass = %d\n',Mass_tot_edge)
-    for h=1:nt
-        F=sum(F_source_edge(:,:,h),'all')
-    end
-     F_source_ed=zeros(1,nt);
-    for h=1:nt
-      F_source_ed(1,h)=sum(Conn.*F_source_edge(:,:,h),'all').*t(h)
-    end
-    F_source_nodes=zeros(1,nt);
-    source_reg=ones(nroi,1);
-    for h=1:nt
-    F_source_nodes(1,h)=sum(Vol(seedregions_).*(ip.Results.alpha*source_reg(seedregions_,1)) ,'all').*t(h);
-    end
-     M_tot=Mass_node+Mass_tot_edge
-     F_source=F_source_nodes+F_source_ed
-     M_tot_tru=M_tot(1,1)+F_source
-     Mass_error=(M_tot-(M_tot(1,1)+F_source))./(M_tot(1,1)+F_source)
+% Total edge mass
+Mass_tot_edge = zeros(1, nt);
+for h = 1:nt
+    Mass_tot_edge(1,h) = sum(Conn .* Mass_edge(:,:,h), 'all');
+end
+fprintf('Total Edge Mass = %d\n', Mass_tot_edge)
 
-    txt = ['$\mathbf{\gamma}_{1,t}$' num2str(ip.Results.gamma1_dt),',', '$\mathbf{\lambda}_{t}$',',' num2str(ip.Results.lambda_dt),',' '$\mathbf{\lambda_1} = $' num2str(lambda1_)  ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
-    figure%(1)
-    plot(t,M_tot,'r')
-    hold on
-    plot(t,M_tot_tru,'b')
-    ylabel('t')
-    xlabel('Mass(t)')
-    title('Total mass vs total mass true')
-     subtitle(txt,'Interpreter','latex');
-%      saveas(figure(1),[ cd '/plot/' 'Tot_mass' '_' 'lambda_var_bis' '.png' ])
-%     M_tot(1,1)
-%   reldiffs = M_tot - M_tot(1,1);
-% reldiffs = reldiffs ./ M_tot(1,1);
-% 
-figure %(2); 
-%hold on;
-%for i = 1:size(masstots,1)
-    plot(t,Mass_error); 
-    ylabel('t')
-    xlabel('E(t)')
-    title('Relative error Total mass')
- subtitle(txt,'Interpreter','latex');
-%     saveas(figure(2),[ cd '/plot/' 'Rel_err' '_' 'lambda_var_bis' '.png' ])
-% %end
-% 
-% 
-% 
-% 
-figure%(3)
-%figure
-subplot(2,1,1)
-plot(t,N);
-
-
-xlabel('t');
-ylabel('N(t)');
- title("N,M distributions on the network",'Fontsize',12);
-  %txt = ['$\mathbf{\gamma}_{1,t} = $' num2str(gamma1_dt), ',','$\mathbf{\lambda_1} = $' num2str(lambda1_) ',' '$\mathbf{\lambda_2} = $' num2str(lambda2_) ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
- %subtitle(txt,'Interpreter','latex');
-subplot(2,1,2)
-plot(t,M);
-xlabel('t');
-ylabel('M(t)');
-%  saveas(figure(3),[ cd '/plot/' 'N_M' '_' 'lambda_var_bis' '.png' ])
-% 
-
-figure%(4)
-%figure
-subplot(2,1,1)
-plot(t,N(i_zero,:));
- title("N,M distributions on the network",'Fontsize',12);
- % txt = ['$\mathbf{\gamma}_{1,t}$' num2str(gamma1_dt),',', '$\mathbf{\lambda}_{t}$',',' num2str(lambda_dt),',' '$\mathbf{\lambda_1} = $' num2str(lambda1_) ',' '$\mathbf{\lambda_2} = $' num2str(lambda2_) ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
- %subtitle(txt,'Interpreter','latex');
-subplot(2,1,2)
-plot(t,M(i_zero,:));
-%  saveas(figure(4),[ cd '/plot/' 'N_M_no_seed' '_' 'lambda_var_bis' '.png' ])
-
-figure%(5)
-%figure
-
-plot(t,res_max);
-
-
-xlabel('t');
-ylabel('res_max');
- title("max residual shooting parameter calculation",'Fontsize',12);
-
-
-% 
-% figure(5)
-% %figure
-% plot(t,N+M);
-% 
-% 
-% xlabel('t');
-% ylabel('N(t)+M(t)');
-%  title("N,M distributions on the network",'Fontsize',12);
-%   %txt = ['$\mathbf{\gamma}_{1,t}$' num2str(gamma1_dt),',','$\mathbf{\lambda_1} = $' num2str(lambda1_) ',' '$\mathbf{\lambda_2} = $' num2str(lambda2_) ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
-%  subtitle(txt,'Interpreter','latex');
-%  saveas(figure(5),[ cd '/plot/' 'Tot_tau' '_' 'lambda_var_bis' '.png' ])
-% 
-%  %figure(5)
-% figure(6)
-% plot(t,N(i_zero,:)+M(i_zero,:));
-% 
-% 
-% xlabel('t');
-% ylabel('N(t)+M(t)');
-%  title("Total Tau on the network",'Fontsize',12);
-%   %txt = ['$\mathbf{\gamma}_{1,t}$' num2str(gamma1_dt),',','$\mathbf{\lambda_1} = $' num2str(lambda1_) ',' '$\mathbf{\lambda_2} = $' num2str(lambda2_) ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
-%  subtitle(txt,'Interpreter','latex');
-%  saveas(figure(6),[ cd '/plot/' 'Tot_tau_no_seed' '_' 'lambda_var_bis' '.png' ])
-% %nroi_idx=1:nroi;
-%   %figure(6)
-% figure(7)
-% heatmap(N(i_zero,1:end)+M(i_zero,1:end));
-% 
-% 
-% xlabel('t');
-% ylabel('N(t)+M(t)');
-%  title("Total Tau on the network");
-% % subtitle(txt,'Interpreter','latex');
-%  saveas(figure(7),[ cd '/plot/' 'Tot_tau_heatmap' '_' 'lambda_var' '.png' ])
-%  %  txt = ['$\mathbf{\gamma}_{1,t}$' num2str(gamma1_dt),',','$\mathbf{\lambda_1} = $' num2str(lambda1_) ',' '$\mathbf{\lambda_2} = $' num2str(lambda2_) ',' , '$\mathbf{\beta}=$' num2str(beta_) ','  '$\mathbf{\epsilon}=$' num2str(epsilon_) ',', '$\mathbf{\delta}=$' num2str(delta_) ];
-%  % subtitle(txt,'Interpreter','latex');
-% 
-% 
-% 
-% 
-% 
-% 
-% 
-% 
-% 
-% figure(8)
-% for h=1:nt
-% 
-%     subplot(2,1,1)
-%     %heatmap(1:nroi,1:nroi, B(:,:,h))
-%     plot(t(h),max(abs(B(:,:,h)),[],'all'),'o',LineWidth=2)
-%     hold on
-%     title('B network')
-%     %subtitle(txt,'Interpreter','latex')
-%     subplot(2,1,2)
-%     %heatmap(1:nroi,1:nroi,6*30*24*(60)^2*netw_flux(:,:,h))
-% 
-%     plot(t(h),max(abs(6*30*24*(60)^2*netw_flux(:,:,h)),[],'all'),'*',LineWidth=2)
-%    hold on
-%  % xlabel('nroi')
-%  % ylabel('J,B (o-* line)' )
-%  title('J network')
-% 
-% end
-% % saveas(figure(8),[ cd '/plot/' 'B_J' '_' 'lambda_var' '.png' ])
-% saveas(figure(8),[ cd '/plot/' 'BJ' '_' 'lambda_var_bis' '.png' ])
-
+% Cumulative distributed source on all edges
+F_source_ed = zeros(1, nt);
+for h = 1:nt
+    F_source_ed(1,h) = sum(Conn .* F_source_edge(:,:,h), 'all') .* t(h);
 end
 
+% Node-level source from alpha
+F_source_nodes = zeros(1, nt);
+source_reg = ones(nroi, 1);
+for h = 1:nt
+    F_source_nodes(1,h) = sum(Vol(seedregions_) .* (ip.Results.alpha * source_reg(seedregions_,1)), 'all') .* t(h);
+end
+
+M_tot      = Mass_node + Mass_tot_edge
+F_source   = F_source_nodes + F_source_ed
+M_tot_tru  = M_tot(1,1) + F_source
+Mass_error = (M_tot - (M_tot(1,1) + F_source)) ./ (M_tot(1,1) + F_source)
+
+txt = ['gamma1_dt=' num2str(ip.Results.gamma1_dt) ', lambda_dt=' num2str(ip.Results.lambda_dt) ...
+       ', lambda1=' num2str(lambda1_) ', beta=' num2str(beta_) ...
+       ', epsilon=' num2str(epsilon_) ', delta=' num2str(delta_)];
+
+figure
+plot(t, M_tot, 'r')
+hold on
+plot(t, M_tot_tru, 'b')
+ylabel('t');  xlabel('Mass(t)');
+title('Total mass vs total mass true')
+subtitle(txt, 'Interpreter', 'latex');
+
+figure
+plot(t, Mass_error);
+ylabel('t');  xlabel('E(t)');
+title('Relative error Total mass')
+subtitle(txt, 'Interpreter', 'latex');
+
+figure
+subplot(2,1,1); plot(t, N); xlabel('t'); ylabel('N(t)');
+title("N,M distributions on the network", 'Fontsize', 12);
+subplot(2,1,2); plot(t, M); xlabel('t'); ylabel('M(t)');
+
+figure
+subplot(2,1,1); plot(t, N(i_zero,:)); title("N,M distributions on the network", 'Fontsize', 12);
+subplot(2,1,2); plot(t, M(i_zero,:));
+
+figure
+plot(t, res_max);
+xlabel('t');  ylabel('res_max');
+title("max residual shooting parameter calculation", 'Fontsize', 12);
 %}
+
+end  % network_transport_model_Neu_func
