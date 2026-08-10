@@ -109,7 +109,6 @@ kappa_delta_ = 1; % For AB coupling w/ delta_hat
 %kappa_sigma_ = 1; % AB coupling w/ sigma_hat
 gamma_hat_ = 1; % for AB coupling w/ Aggregation
 kappa_gamma_ = 1; % for ab Coupling w/ gamma_hat_
-kappa_epsilon_ = 1; % for ab coupling
 
 % --- Spatial geometry ---
 L_int_    = 1000;       % axon length [um]
@@ -186,15 +185,14 @@ addParameter(ip, 'plotting',          plotting_,           validLogical);
 addParameter(ip, 'axon_div',          axon_div_,           validAxonDiv);
 addParameter(ip, 'r',                 r_,                  validScalar); % Logical growth term in AB calc.
 addParameter(ip, 'Dif',               Dif_,                validScalar); % Diffusion term for AB
-%addParameter(ip, 'mu_r_hat',          mu_r_hat_,           validScalar);
+addParameter(ip, 'mu_r_hat',          mu_r_hat_,           validScalar);
 addParameter(ip, 'kappa_mu_r',        kappa_mu_r_,         validScalar);
-%addParameter(ip, 'mu_u_hat',          mu_u_hat_,           validScalar);
+addParameter(ip, 'mu_u_hat',          mu_u_hat_,           validScalar);
 addParameter(ip, 'kappa_mu_u',        kappa_mu_u_,         validScalar);
-%addParameter(ip, 'delta_hat',         delta_hat_,          validScalar);
+addParameter(ip, 'delta_hat',         delta_hat_,          validScalar);
 addParameter(ip, 'kappa_delta',       kappa_delta_,        validScalar);
-%addParameter(ip, 'gamma_hat',         gamma_hat_,          validScalar);
+addParameter(ip, 'gamma_hat',         gamma_hat_,          validScalar);
 addParameter(ip, 'kappa_gamma',       kappa_gamma_,        validScalar);
-addParameter(ip, 'kappa_epsilon',     kappa_epsilon_,      validScalar);
 parse(ip, varargin{:});
 
 % =========================================================================
@@ -442,6 +440,7 @@ Delta_hat = ip.Results.delta + ip.Results.kappa_delta * Abeta;
 % Epsilon Coupling
 Epsilon_hat = ip.Results.epsilon + ip.Results.kappa_epsilon * Abeta;
 
+% 
 
 % Gamma1 matrix: [nroi x nt], initially uniform at gamma1_new
 Gamma1 = gamma1_new * ones(nroi, nt);

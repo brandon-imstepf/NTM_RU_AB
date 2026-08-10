@@ -80,23 +80,30 @@ function [network_flux_0, network_flux_L, mass_edge, F_source_edge, n_ss0, res_m
 beta_         = 1e-06;
 gamma1_x0_    = 2e-05;    % aggregation rate at source end
 gamma1_xL_    = 2e-05;    % aggregation rate at target end
-gamma2_        = 0;
-delta_         = 50;
-epsilon_       = 25;
+gamma2_       = 0;
+delta_        = 50;
+delta_x0_     = 0.01;
+delta_xL_     = 0.01;
+epsilon_      = 25;
+epsilon_x0_   = 0.025;
+epsilon_xL_   = 0.025;
 lambda1_x0_   = 0.0025;   % AIS permeability at source end
 lambda1_xL_   = 0.0025;   % AIS permeability at target end
-frac_          = 0.92;     % diffusing fraction of tau (Konsack 2007)
-L_int_         = 1000;     % axon length in um
-L1_            = 200;      % somatodendritic length in um
-L_ais_         = 40;       % AIS length in um
-L_syn_         = 40;       % synaptic terminal length in um
-resmesh_       = 'coarse'; % 'fine' or 'coarse' spatial mesh
-reltol_        = 1e-6;
-abstol_        = 1e-6;
-fsolvetol_     = 1e-6;
+frac_         = 0.92;     % diffusing fraction of tau (Konsack 2007)
+L_int_        = 1000;     % axon length in um
+L1_           = 200;      % somatodendritic length in um
+L_ais_        = 40;       % AIS length in um
+L_syn_        = 40;       % synaptic terminal length in um
+resmesh_      = 'coarse'; % 'fine' or 'coarse' spatial mesh
+reltol_       = 1e-6;
+abstol_       = 1e-6;
+fsolvetol_    = 1e-6;
 connectome_subset_ = 'Hippocampus+PC+RSP';
-len_scale_     = 1e-3;     % um → mm
-time_scale_    = 1;        % set to 1 here; caller may pass actual time scale
+len_scale_    = 1e-3;     % um → mm
+time_scale_   = 1;        % set to 1 here; caller may pass actual time scale
+
+% AB-Specific Parameters (Brandon, 7/31/2026)
+% To do
 
 % Boundary flux constants
 F_edge_0_      = 1e-08 * time_scale_;
@@ -123,7 +130,11 @@ addParameter(ip, 'beta',              beta_,          validScalar);
 addParameter(ip, 'F_edge_0',          F_edge_0_,      validScalar);
 addParameter(ip, 'gamma2',            gamma2_,        validScalar);
 addParameter(ip, 'delta',             delta_,         validScalar);
+addParameter(ip, 'delta_x0',          delta_x0_,      validArray);
+addParameter(ip, 'delta_xL',          delta_xL_,      validArray); % Added Arrays for Delta, Epsilon (Brandon, 8/10/2026)
 addParameter(ip, 'epsilon',           epsilon_,       validScalar);
+addParameter(ip, 'epsilon_x0',        epsilon_x0_,    validArray);
+addParameter(ip, 'epsilon_xL',        epsilon_xL_,    validArray);
 addParameter(ip, 'frac',              frac_,          validScalar);
 addParameter(ip, 'gamma1_x0',         gamma1_x0_,     validArray);
 addParameter(ip, 'gamma1_xL',         gamma1_xL_,     validArray);
@@ -131,10 +142,10 @@ addParameter(ip, 'lambda1_x0',        lambda1_x0_,    validArray);
 addParameter(ip, 'lambda1_xL',        lambda1_xL_,    validArray);
 addParameter(ip, 'idx_netw_x0',       idx_netw_x0_,   validArray);
 addParameter(ip, 'idx_netw_xL',       idx_netw_xL_,   validLogical);
-addParameter(ip, 'mu_r_0',            mu_r_0_,        validScalar);
-addParameter(ip, 'mu_r_L',            mu_r_L_,        validScalar);
-addParameter(ip, 'mu_u_0',            mu_u_0_,        validScalar);
-addParameter(ip, 'mu_u_L',            mu_u_L_,        validScalar);
+addParameter(ip, 'mu_r_0',            mu_r_0_,        validArray); % Changed mu's to Array for diffuse support (Brandon, 7/31/2026)
+addParameter(ip, 'mu_r_L',            mu_r_L_,        validArray); 
+addParameter(ip, 'mu_u_0',            mu_u_0_,        validArray);
+addParameter(ip, 'mu_u_L',            mu_u_L_,        validArray);
 addParameter(ip, 'L_int',             L_int_,         validScalar);
 addParameter(ip, 'L1',                L1_,            validScalar);
 addParameter(ip, 'resmesh',           resmesh_);
@@ -165,7 +176,7 @@ v_a    = 0.7 * ip.Results.len_scale * ip.Results.time_scale;   % anterograde vel
 v_r    = 0.7 * ip.Results.len_scale * ip.Results.time_scale;   % retrograde velocity
 diff_n = 12  * ip.Results.len_scale^2 * ip.Results.time_scale; % free tau diffusivity
 
-% Boundary flux rates (assigned to local vars for clarity in nested functions)
+% Boundary flux rates as Arrays (assigned to local vars for clarity in nested functions)
 mu_r_0 = ip.Results.mu_r_0;
 mu_r_L = ip.Results.mu_r_L;
 mu_u_0 = ip.Results.mu_u_0;
@@ -178,6 +189,12 @@ lambda1_x0 = ip.Results.lambda1_x0;
 lambda1_xL = ip.Results.lambda1_xL;
 idx_netw_x0 = ip.Results.idx_netw_x0;
 idx_netw_xL = ip.Results.idx_netw_xL;
+
+% Extract delta, epsilon arrays
+delta_x0 = ip.Results.delta_x0;
+delta_xL = ip.Results.delta_xL;
+epsilon_x0 = ip.Results.epsilon_x0;
+epsilon_xL = ip.Results.epsilon_xL;
 
 % =========================================================================
 % SECTION 4: Build the spatial mesh
@@ -223,10 +240,12 @@ xmesh = [xmesh1, xmesh_int];
 % call them.  MATLAB closures are copy-captured in parfor, which is fine.
 % =========================================================================
 
-% Averaging functions for gamma1 and lambda1 along an edge (i→j):
+% Averaging functions for gamma1, lambda1, delta & epsilon along an edge (i→j):
 %   Use the arithmetic mean of the source-end and target-end values.
-gamma1_fun = @(gamma1_i, gamma1_j, x) (gamma1_i + gamma1_j) ./ 2;
-lambda_fun = @(lambda_i, lambda_j, x) (lambda_i + lambda_j) ./ 2;
+gamma1_fun   = @(gamma1_i, gamma1_j, x) (gamma1_i + gamma1_j) ./ 2;
+lambda_fun   = @(lambda_i, lambda_j, x) (lambda_i + lambda_j) ./ 2;
+delta_fun    = @(delta_i, delta_j, x) (delta_i + delta_j) ./ 2;
+epsilon_fun  = @(epsilon_i, epsilon_j, x) (epsilon_i + epsilon_j) ./ 2;
 
 % Distributed source: int_F_edge(x) = F_edge_0 * (x - x0)
 x0 = xmesh(1);
@@ -284,7 +303,7 @@ n_ss_axon = @(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, x) ...
 % Mass-balance condition (Neumann BC at x=L):
 %   -mu_r_0*B + mu_u_0*N_i + int_F_edge(x3) - mu_r_L*n(x3) + mu_u_L*N_j = 0
 % Meaning: flux in at x=0 + distributed production = flux out at x=L
-f_init = @(B, N_i, N_j, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j) ...
+f_init = @(B, N_i, N_j, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j) ...
     -mu_r_0 .* B + mu_u_0 .* N_i + int_F_edge(x3, idx) ...
     - mu_r_L .* n_ss_axon(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, x3) ...
     + mu_u_L .* N_j;
@@ -367,6 +386,8 @@ parfor i = 1:nroi
     idx_netw_xL_i  = repmat(idx_netw_xL(i),  length(Adj_in), 1);
     gamma1_xL_i    = repmat(gamma1_xL(i),    length(Adj_in), 1);
     lambda1_xL_i   = repmat(lambda1_xL(i),   length(Adj_in), 1);
+    delta_xL_i     = repmat(delta_xL(i),    length(Adj_in), 1);
+    epsilon_xL_i   = repmat(epsilon_xL(i),  length(Adj_in), 1);
 
     % Apply the adjacency mask: keep only entries where j is connected to i
     i_app = Adj_in;  % indices of active source regions for this target i
@@ -379,6 +400,10 @@ parfor i = 1:nroi
     gamma1_xL_i   = gamma1_xL_i(i_app);     % aggregation rate at target
     lambda1_x0_i  = lambda1_x0(i_app, i);  % AIS permeability at source
     lambda1_xL_i  = lambda1_xL_i(i_app);    % AIS permeability at target
+    delta_x0_i    = delta_x0(i_app, i);
+    delta_xL_i    = delta_xL_i(i_app);
+    epsilon_x0_i  = epsilon_x0(i_app,i);
+    epsilon_xL_i  = epsilon_xL_i(i_app);
 
     if ~isempty(tau_x0_i)  % skip if region i has no incoming connections
         options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
@@ -389,7 +414,8 @@ parfor i = 1:nroi
 
         % Build the shooting residual for all source regions simultaneously
         fun_ss = @(B) f_init(B, tau_x0_i, tau_xL_i, idx_netw, ...
-                              lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i);
+                              lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
+                              delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i);
 
         % Warm-start fsolve from the previous step's n(0) values (+ tiny perturbation)
         f0 = f_ss0(i_app, i) + 1e-7;
