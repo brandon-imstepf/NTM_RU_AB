@@ -274,39 +274,39 @@ options = odeset('RelTol', ip.Results.reltol, 'AbsTol', ip.Results.abstol);
 % dn/dx = (1/D)*(mu_r_0*B - mu_u_0*N_i - int_F_edge(x))
 % B = n(0) = shooting parameter; N_i = extracellular tau at source node
 n0 = @(B) B;   % IC: n(x=0) = B
-n_ss_presyn = @(B, N_i, idx) ode15s(@(x, n) ode_ss_n(x, B, n, diff_n, N_i, idx), ...
+n_ss_presyn = @(B, N_i, idx,mu_r_0_i, mu_u_0_i) ode15s(@(x, n) ode_ss_n(x, B, n, diff_n, N_i, mu_r_0_i, mu_u_0_i, idx), ...
                                       [0, L1_new], n0(B), options);
-n_ss_presyn = @(B, N_i, idx, x) deval(n_ss_presyn(B, N_i, idx), x);
+n_ss_presyn = @(B, N_i, idx,mu_r_0_i, mu_u_0_i, x) deval(n_ss_presyn(B, N_i, idx,mu_r_0_i, mu_u_0_i), x);
 
 % --- Compartment 2: AIS [L1, L1+L_ais] ---
 % Same ODE as presyn but diffusivity scaled by lambda (AIS permeability factor):
 %   D_ais = diff_n * lambda_fun(lambda_i, lambda_j)
 % IC: continuity at x1 (n must be equal across presyn/AIS boundary)
-n_ss_ais = @(B, N_i, idx, lambda1_i, lambda1_j) ...
-    ode15s(@(x, n) ode_ss_n(x, B, n, diff_n * lambda_fun(lambda1_i, lambda1_j, x), N_i, idx), ...
+n_ss_ais = @(B, N_i, idx, lambda1_i, lambda1_j, mu_r_0_i, mu_u_0_i) ...
+    ode15s(@(x, n) ode_ss_n(x, B, n, diff_n * lambda_fun(lambda1_i, lambda1_j, x), N_i, mu_r_0_i, mu_u_0_i, idx), ...
            [L1_new, L1_new + L_ais_new], n_ss_presyn(B, N_i, idx, x1), options);
-n_ss_ais = @(B, N_i, idx, lambda1_i, lambda1_j, x) deval(n_ss_ais(B, N_i, idx, lambda1_i, lambda1_j), x);
+n_ss_ais = @(B, N_i, idx, lambda1_i, lambda1_j, mu_r_0_i, mu_u_0_i, x) deval(n_ss_ais(B, N_i, idx, lambda1_i, lambda1_j,mu_r_0_i, mu_u_0_i), x);
 
 % --- Compartment 3: Axon proper [L1+L_ais, L1+L_int-L_syn] ---
 % Nonlinear ODE including active transport:
 %   dn/dx = (1/(frac*D)) * [(1-frac)*v_eff(n)*n + mu_r_0*B - mu_u_0*N_i - F_edge(x)]
 % where v_eff captures motor crowding (delta) and aggregation coupling (epsilon).
 % IC: continuity at x2 (end of AIS)
-n_ss_axon = @(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j) ...
-    ode15s(@(x, n) ode_ss_axon(x, B, gamma1_i, gamma1_j, n, N_i, idx), ...
+n_ss_axon = @(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i,delta_j,epsilon_i,epsilon_j,mu_r_0_i, mu_u_0_i) ...
+    ode15s(@(x, n) ode_ss_axon(x, B, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, n, N_i, mu_r_0_i, mu_u_0_i, idx), ...
            [L1_new + L_ais_new, L1_new + L_int_new - L_syn_new], ...
-           n_ss_ais(B, N_i, idx, lambda1_i, lambda1_j, x2), options);
-n_ss_axon = @(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, x) ...
-    deval(n_ss_axon(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j), x);
+           n_ss_ais(B, N_i, idx, lambda1_i, lambda1_j, mu_r_0_i, mu_u_0_i, x2), options);
+n_ss_axon = @(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, mu_r_0_i, mu_u_0_i, x) ...
+    deval(n_ss_axon(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j,mu_r_0_i, mu_u_0_i), x);
 
 % --- Shooting residual f_init(B) ---
 % Mass-balance condition (Neumann BC at x=L):
 %   -mu_r_0*B + mu_u_0*N_i + int_F_edge(x3) - mu_r_L*n(x3) + mu_u_L*N_j = 0
 % Meaning: flux in at x=0 + distributed production = flux out at x=L
-f_init = @(B, N_i, N_j, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j) ...
-    -mu_r_0 .* B + mu_u_0 .* N_i + int_F_edge(x3, idx) ...
-    - mu_r_L .* n_ss_axon(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, x3) ...
-    + mu_u_L .* N_j;
+f_init = @(B, N_i, N_j, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j,mu_r_0_i, mu_u_0_i,mu_r_L_i, mu_u_L_i) ...
+    -mu_r_0_i .* B + mu_u_0_i .* N_i + int_F_edge(x3, idx) ...
+    - mu_r_L_i .* n_ss_axon(B, N_i, idx, lambda1_i, lambda1_j, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, mu_r_0_i, mu_u_0_i, x3) ...
+    + mu_u_L_i .* N_j;
 
 % =========================================================================
 % SECTION 6: Sub-set the adjacency matrix to the selected brain region group
@@ -334,6 +334,18 @@ switch ip.Results.connectome_subset
         Adj = [1 1 1];              % three-edge test (seed↔seed, seed↔non-seed)
 end
 nroi = size(Adj, 2);  % number of regions in the chosen subset
+
+% Normalize mu_r/mu_u to full Adj-shaped arrays if the caller passed scalars
+% (driver still passes flat scalars today (8/27/26); will pass Mu_r_hat/Mu_u_hat arrays later)
+if isscalar(mu_r_0), mu_r_0 = mu_r_0 * ones(size(Adj)); end
+if isscalar(mu_u_0), mu_u_0 = mu_u_0 * ones(size(Adj)); end
+if isscalar(mu_r_L), mu_r_L = mu_r_L * ones(nroi, 1);   end
+if isscalar(mu_u_L), mu_u_L = mu_u_L * ones(nroi, 1);   end
+% debugging 8/27/2026
+assert(isequal(size(mu_r_0), size(Adj)), 'mu_r_0 shape does not match Adj'); % rwk_debug
+assert(isequal(size(mu_u_0), size(Adj)), 'mu_u_0 shape does not match Adj'); % rwk_debug
+assert(numel(mu_r_L) == nroi, 'mu_r_L length does not match nroi'); % rwk_debug
+assert(numel(mu_u_L) == nroi, 'mu_u_L length does not match nroi'); % rwk_debug
 
 % =========================================================================
 % SECTION 7: Allocate output arrays
@@ -386,8 +398,10 @@ parfor i = 1:nroi
     idx_netw_xL_i  = repmat(idx_netw_xL(i),  length(Adj_in), 1);
     gamma1_xL_i    = repmat(gamma1_xL(i),    length(Adj_in), 1);
     lambda1_xL_i   = repmat(lambda1_xL(i),   length(Adj_in), 1);
-    delta_xL_i     = repmat(delta_xL(i),    length(Adj_in), 1);
-    epsilon_xL_i   = repmat(epsilon_xL(i),  length(Adj_in), 1);
+    delta_xL_i     = repmat(delta_xL(i),     length(Adj_in), 1);
+    epsilon_xL_i   = repmat(epsilon_xL(i),   length(Adj_in), 1);
+    mu_r_L_i       = repmat(mu_r_L(i),       length(Adj_in), 1);
+    mu_u_L_i       = repmat(mu_u_L(i),       length(Adj_in), 1);
 
     % Apply the adjacency mask: keep only entries where j is connected to i
     i_app = Adj_in;  % indices of active source regions for this target i
@@ -404,6 +418,13 @@ parfor i = 1:nroi
     delta_xL_i    = delta_xL_i(i_app);
     epsilon_x0_i  = epsilon_x0(i_app,i);
     epsilon_xL_i  = epsilon_xL_i(i_app);
+    mu_r_L_i      = mu_r_L_i(i_app);
+    mu_u_L_i      = mu_u_L_i(i_app);
+    mu_r_0_i      = mu_r_0(i_app, i);
+    mu_u_0_i      = mu_u_0(i_app, i);
+
+    assert(numel(mu_r_0_i) == sum(i_app), 'mu_r_0_i length mismatch vs i_app'); % rwk_debug
+    assert(numel(mu_r_L_i) == sum(i_app), 'mu_r_L_i length mismatch vs i_app'); % rwk_debug
 
     if ~isempty(tau_x0_i)  % skip if region i has no incoming connections
         options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
@@ -414,7 +435,8 @@ parfor i = 1:nroi
 
         % Build the shooting residual for all source regions simultaneously
         fun_ss = @(B) f_init(B, tau_x0_i, tau_xL_i, idx_netw, ...
-                              lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, delta_x0_);
+                              lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
+                              delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i,mu_r_0_i,mu_u_0_i,mu_r_L_i,mu_u_L_i);
 
         % Warm-start fsolve from the previous step's n(0) values (+ tiny perturbation)
         f0 = f_ss0(i_app, i) + 1e-7;
@@ -449,7 +471,7 @@ parfor i = 1:nroi
         %   J_0 = -mu_r_0 * n(0) + mu_u_0 * N_source
         % Positive J_0 → net tau flow from source node INTO the axon.
         % ------------------------------------------------------------------
-        netflux_0_temp = -mu_r_0 .* n_ss0_temp + mu_u_0 .* tau_x0_i;
+        netflux_0_temp = -mu_r_0_i .* n_ss0_temp + mu_u_0_i .* tau_x0_i;
         temp_netflux_0 = zeros(nroi, 1);
         temp_netflux_0(i_app) = netflux_0_temp;
         network_flux_0_dict(i, :) = temp_netflux_0;
@@ -461,10 +483,10 @@ parfor i = 1:nroi
         % n(x3) is evaluated by re-integrating the full axon ODE with
         % the just-solved n(0) = n_ss0_temp.
         % ------------------------------------------------------------------
-        netflux_L_temp = mu_r_L .* n_ss_axon(n_ss0_temp, tau_x0_i, idx_netw, ...
+        netflux_L_temp = mu_r_L_i .* n_ss_axon(n_ss0_temp, tau_x0_i, idx_netw, ...
                                                lambda1_x0_i, lambda1_xL_i, ...
-                                               gamma1_x0_i, gamma1_xL_i, x3) ...
-                         - mu_u_L .* tau_xL_i;
+                                               gamma1_x0_i, gamma1_xL_i, delta mu_r_0_i, mu_u_0_i, x3) ...
+                         - mu_u_L_i .* tau_xL_i;
         temp_netflux_L = zeros(nroi, 1);
         temp_netflux_L(i_app) = netflux_L_temp;
         network_flux_L_dict(i, :) = temp_netflux_L;
@@ -518,8 +540,8 @@ res_max = max(abs(res), [], 'all');
     %   mu_r_0*B  : release at soma (proportional to n(0)=B; constant per solve)
     %   mu_u_0*N_i: uptake of extracellular N_i into the axon
     %   int_F_edge: cumulative distributed source term
-    function nprime = ode_ss_n(x, B, n, D, N_i, idx)
-        nprime = (1./D) .* (mu_r_0 .* B - mu_u_0 .* N_i - int_F_edge(x, idx));
+    function nprime = ode_ss_n(x, B, n, D, N_i, mu_r_0_i, mu_u_0_i, idx)
+        nprime = (1./D) .* (mu_r_0_i .* B - mu_u_0_i .* N_i - int_F_edge(x, idx));
     end
 
     % ODE for the axon proper (nonlinear: includes active transport)
@@ -530,13 +552,18 @@ res_max = max(abs(res), [], 'all');
     %   v_a*(1+delta*n)   : anterograde velocity enhanced by motor crowding
     %   *(1-...)           : speed reduction when aggregated tau (∝ n^2) clogs motors
     %   -v_r              : net retrograde component subtracted
-    function nprime = ode_ss_axon(x, B, gamma1_i, gamma1_j, n, N_i, idx)
+    function nprime = ode_ss_axon(x, B, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, n, N_i, mu_r_0_i, mu_u_0_i, idx)
         nprime = 1 ./ (ip.Results.frac * diff_n) .* ...
                  ((1 - ip.Results.frac) .* ...
-                  ((v_a .* (1 + ip.Results.delta .* n) .* ...
-                    (1 - (gamma1_fun(gamma1_i, gamma1_j) .* ip.Results.epsilon .* n.^2) ./ ...
+                  ((v_a .* (1 + delta_fun(delta_i,delta_j,x) .* n) .* ...
+                    (1 - (gamma1_fun(gamma1_i, gamma1_j,x) .* epsilon_fun(epsilon_i,epsilon_j,x) .* n.^2) ./ ...
                          (beta_new - ip.Results.gamma2 .* n)) - v_r)) .* n + ...
-                  mu_r_0 .* B - mu_u_0 .* N_i - int_F_edge(x, idx));
+                  mu_r_0_i .* B - mu_u_0_i .* N_i - int_F_edge(x, idx));
     end
+% debugging 8/27/2026
+d_avg = delta_fun(delta_i, delta_j,x);
+e_avg = epsilon_fun(epsilon_i, epsilon_j,x);
+assert(isequal(size(d_avg),size(n)) || isscalar(d_avg), 'ode_ss_axon: delta avg shape mismatch'); % rwk_debug
+assert(isequal(size(e_avg),size(n)) || isscalar(e_avg), 'ode_ss_axon: epsilon avg shape mismatch'); % rwk_debug
 
 end  % NetworkFluxCalculator_Neu

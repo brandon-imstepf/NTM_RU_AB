@@ -99,6 +99,7 @@ r_ = 1;
 Dif_ = 1; % AB Diffusion term
 
 % --- Coupling Terms ---
+coupling_term_ = 'none'; % which single term is used this run: 'mu_u'|'mu_r'|'delta'|'epsilon'|'none'
 mu_r_hat_ = 1; % For AB Coupling w/ Release term
 kappa_mu_r_ = 1; % For AB coupling w/ mu_r_hat 
 mu_u_hat_ = 1; % for AB coupling w/ Uptake term
@@ -110,6 +111,7 @@ kappa_delta_ = 1; % For AB coupling w/ delta_hat
 gamma_hat_ = 1; % for AB coupling w/ Aggregation
 kappa_gamma_ = 1; % for ab Coupling w/ gamma_hat_
 kappa_epsilon_ = 1; % for ab coupling
+
 
 % --- Spatial geometry ---
 L_int_    = 1000;       % axon length [um]
@@ -149,6 +151,7 @@ ip = inputParser;
 validScalar  = @(x) isnumeric(x) && isscalar(x) && (x >= 0);
 validLogical = @(x) validScalar(x) && (x == 0 || x == 1);
 validAxonDiv = @(x) strcmp(x,'r1') | strcmp(x,'half') | strcmp(x,'r2');
+validCouplingTerm = @(x) any(strcmp(x, {'mu_u','mu_r','delta','epsilon','none'}));
 
 addParameter(ip, 'alpha',             alpha_,              validScalar);
 addParameter(ip, 'F_edge_0',          F_edge_0_,           validScalar);
@@ -186,6 +189,7 @@ addParameter(ip, 'plotting',          plotting_,           validLogical);
 addParameter(ip, 'axon_div',          axon_div_,           validAxonDiv);
 addParameter(ip, 'r',                 r_,                  validScalar); % Logical growth term in AB calc.
 addParameter(ip, 'Dif',               Dif_,                validScalar); % Diffusion term for AB
+addParameter(ip, 'coupling_term',     coupling_term_,      validCouplingTerm);
 %addParameter(ip, 'mu_r_hat',          mu_r_hat_,           validScalar);
 addParameter(ip, 'kappa_mu_r',        kappa_mu_r_,         validScalar);
 %addParameter(ip, 'mu_u_hat',          mu_u_hat_,           validScalar);
@@ -430,17 +434,40 @@ der = zeros(nroi, nt);
 % is applied (numbered within the chosen connectome subset).
 % =========================================================================
 
-% Uptake matrix
-Mu_u_hat = ip.Results.mu_u_0 + ip.Results.kappa_mu_u * Abeta;
+% uptake matrix
+if strcmp(ip.Results.coupling_term,'mu_u')
+    Mu_u_hat = ip.Results.mu_u_0 + ip.Results.kappa_mu_u * Abeta;
+else
+    Mu_u_hat = ip.Results.mu_u_0 * ones(nroi,nt);
+end
 
 % Release Matrix
-Mu_r_hat = ip.Results.mu_r_0 + ip.Results.kappa_mu_r * Abeta;
+if strcmp(ip.Results.coupling_term, 'mu_r')
+    Mu_r_hat = ip.Results.mu_r_0 + ip.Results.kappa_mu_r * Abeta;
+else
+    Mu_r_hat = ip.Results.mu_r_0 * ones(nroi, nt);
+end
 
 % Delta Coupling
-Delta_hat = ip.Results.delta + ip.Results.kappa_delta * Abeta; 
+if strcmp(ip.Results.coupling_term, 'delta')
+    Delta_hat = ip.Results.delta + ip.Results.kappa_delta * Abeta;
+else
+    Delta_hat = ip.Results.delta * ones(nroi, nt);
+end
 
 % Epsilon Coupling
-Epsilon_hat = ip.Results.epsilon + ip.Results.kappa_epsilon * Abeta;
+if strcmp(ip.Results.coupling_term, 'epsilon')
+    Epsilon_hat = ip.Results.epsilon + ip.Results.kappa_epsilon * Abeta;
+else
+    Epsilon_hat = ip.Results.epsilon * ones(nroi, nt);
+end
+
+% debugging 8/27/2026
+fprintf('coupling_term = %s\n', ip.Results.coupling_term); % rwk_debug
+assert(isequal(size(Mu_u_hat), [nroi, nt]), 'Mu_u_hat shape mismatch'); % rwk_debug
+assert(isequal(size(Mu_r_hat), [nroi, nt]), 'Mu_r_hat shape mismatch'); % rwk_debug
+assert(isequal(size(Delta_hat), [nroi, nt]), 'Delta_hat shape mismatch'); % rwk_debug
+assert(isequal(size(Epsilon_hat), [nroi, nt]), 'Epsilon_hat shape mismatch'); % rwk_debug
 
 
 % Gamma1 matrix: [nroi x nt], initially uniform at gamma1_new
@@ -628,9 +655,16 @@ for h = 1:(nt-1)
         % Edge-indexed tau matrix at the midpoint N_app (for flux re-computation)
         N_adj_app = N_app .* Adj;
 
-        % Gamma1 and Lambda1 at the midpoint (use the pre-computed _app values)
+        % Gamma1 and Lambda1 (and now uptake, release, delta and epsilon!) at the midpoint (use the pre-computed _app values)
         Gamma1_x0_app  = Gamma_app .* Adj;
         Lambda1_x0_app = Lambda1_app .* Adj;
+        Mu_r_0_app     = Mu_r_hat(:, h) .* Adj;
+        Mu_u_0_app     = Mu_u_hat(:, h) .* Adj;
+        Delta_x0_app   = Delta_hat(:, h) .* Adj;
+        Epsilon_x0_app = Epsilon_hat(:, h) .* Adj;
+        % debugging 8/27/2026
+        assert(isequal(size(Mu_r_0_app), size(Adj)), 'Mu_r_0_app shape mismatch'); % rwk_debug
+        assert(isequal(size(Delta_x0_app), size(Adj)), 'Delta_x0_app shape mismatch'); % rwk_debug
 
         % Step 2 – Compute fluxes at the predictor (midpoint) state N_app
         [F_out_app, F_in_app, ~, ~, ~, ~, ~] = ...
@@ -657,10 +691,14 @@ for h = 1:(nt-1)
                                       'axon_div',          ip.Results.axon_div,        ...
                                       'time_scale',        ip.Results.time_scale,      ...
                                       'connectome_subset', ip.Results.connectome_subset, ...
-                                      'mu_r_0',            ip.Results.mu_r_0,          ...
-                                      'mu_r_L',            ip.Results.mu_r_L,          ...
-                                      'mu_u_0',            ip.Results.mu_u_0,          ...
-                                      'mu_u_L',            ip.Results.mu_u_L);
+                                      'mu_r_0',            Mu_r_0_app,                 ...
+                                      'mu_r_L',            Mu_r_hat(:, h),             ...
+                                      'mu_u_0',            Mu_u_0_app,                 ...
+                                      'mu_u_L',            Mu_u_hat(:, h),             ...
+                                      'delta_x0',          Delta_x0_app,               ...
+                                      'delta_xL',          Delta_hat(:, h),            ...
+                                      'epsilon_x0',        Epsilon_x0_app,             ...
+                                      'epsilon_xL',        Epsilon_hat(:, h));
         F_out_app = F_out_app.';
 
         % m_t at the midpoint state (same formula, evaluated at N_app)
@@ -700,6 +738,10 @@ for h = 1:(nt-1)
     N_adj_h1      = N(:, h+1) .* Adj;         % [nroi x nroi]: N at source end of each edge
     Gamma1_x0_h1  = Gamma1(:, h+1) .* Adj;    % aggregation rate at source, per edge
     Lambda1_x0_h1 = Lambda1(:, h+1) .* Adj;   % AIS permeability at source, per edge
+    Mu_r_0_h1     = Mu_r_hat(:, h+1) .* Adj;
+    Mu_u_0_h1     = Mu_u_hat(:, h+1) .* Adj;
+    Delta_x0_h1   = Delta_hat(:, h+1) .* Adj;
+    Epsilon_x0_h1 = Epsilon_hat(:, h+1) .* Adj;
 
     fprintf('Flux calculation \n')
     tic
@@ -709,9 +751,7 @@ for h = 1:(nt-1)
      F_source_edge(:, :, h+1), n_ss0(:, :, h+1), ~, ~] = ...
         NetworkFluxCalculator_Neu(N_adj_h1, N(:, h+1), n_ss0(:, :, h), Adj_in, ...
                                   'beta',              ip.Results.beta,             ...
-                                  'delta',             ip.Results.delta,            ...
                                   'F_edge_0',          ip.Results.F_edge_0,         ...
-                                  'epsilon',           ip.Results.epsilon,          ...
                                   'frac',              ip.Results.frac,             ...
                                   'lambda1_x0',        Lambda1_x0_h1,              ...
                                   'lambda1_xL',        Lambda1(:, h+1),            ...
@@ -730,10 +770,14 @@ for h = 1:(nt-1)
                                   'axon_div',          ip.Results.axon_div,        ...
                                   'time_scale',        ip.Results.time_scale,      ...
                                   'connectome_subset', ip.Results.connectome_subset, ...
-                                  'mu_r_0',            ip.Results.mu_r_0,          ...
-                                  'mu_r_L',            ip.Results.mu_r_L,          ...
-                                  'mu_u_0',            ip.Results.mu_u_0,          ...
-                                  'mu_u_L',            ip.Results.mu_u_L);
+                                  'mu_r_0',            Mu_r_0_h1,          ...
+                                  'mu_r_L',            Mu_r_hat(:,h+1),          ...
+                                  'mu_u_0',            Mu_u_0_h1,          ...
+                                  'mu_u_L',            Mu_u_hat(:,h+1),         ...
+                                  'delta_x0',          Delta_x0_h1,                ...
+                                  'delta_xL',          Delta_hat(:, h+1),          ...
+                                  'epsilon_x0',        Epsilon_x0_h1,              ...
+                                  'epsilon_xL',        Epsilon_hat(:, h+1));
     toc
 
 end  % time-stepping loop
