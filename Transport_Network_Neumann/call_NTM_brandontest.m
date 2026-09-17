@@ -50,17 +50,27 @@ axon_div     = 'r1';     % axon mass attribution
 % =========================================================================
 % Amyloid-Beta parameters
 % =========================================================================
-r_in   = 1;               % logistic growth rate for Abeta
-Dif_in = 1;                % Abeta diffusion coefficient over the connectome
+r_in   = [0.1,0.5,1.0,2.0];               % logistic growth rate for Abeta
+Dif_in = [0.1,0.5,1.0,2.0];                % Abeta diffusion coefficient over the connectome
+
+%r_in   = 1;                                     % logistic growth rate for Abeta
+%Dif_in = 1;
 
 % --- Coupling selector: exactly ONE of these per run ---
 %   'mu_u' | 'mu_r' | 'delta' | 'epsilon' | 'none'
 coupling_term_in = 'mu_u';
 
-kappa_mu_r_in    = 1;
-kappa_mu_u_in    = 1;
-kappa_delta_in   = 1;
-kappa_epsilon_in = 1;
+kappa_mu_r_in    = [0,0.1,0.5,1,2];
+kappa_mu_u_in    = [0,0.1,0.5,1,2];
+kappa_delta_in   = [0,0.1,0.5,1,2];
+kappa_epsilon_in = [0,0.1,0.5,1,2];
+
+%kappa_mu_r_in    = 1;
+%kappa_mu_u_in    = 0.5;
+%kappa_delta_in   = 1;
+%kappa_epsilon_in = 1;
+
+
 
 % =========================================================================
 % Simulation setup — kept SMALL/FAST for debugging
@@ -69,14 +79,16 @@ connectome_subset_in = 'Hippocampus+PC+RSP';  % small region subset (~30 regions
 resmesh_in           = 'coarse';              % 250-pt axon mesh (vs 1000 for 'fine')
 study_in             = 'Hurtado';
 
-% Explicit short time range: 6 points (nt=6) => 5 time steps, all h<=50,
-% so both the midpoint-predictor call and the per-step call get exercised.
-trange_in = 0:0.01:0.05;
+
+%trange_in = 0:0.01:0.05;
+trange_in =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:1];
+
+tic
 
 % =========================================================================
 % Run the model
 % =========================================================================
-[N, M, R_Edge_Mass] = network_transport_model_Neu_func(matdir, ...
+[N, M, R_Edge_Mass, Vol, t] = network_transport_model_Neu_func(matdir, ...
                                 'alpha',             alpha_in,             ...
                                 'F_edge_0',          F_edge_0_in,          ...
                                 'beta',              beta_in,              ...
@@ -103,13 +115,15 @@ trange_in = 0:0.01:0.05;
                                 'trange',            trange_in,            ...
                                 'study',             study_in);
 
+t_per_run = toc;
+fprintf('Single run took %.1f sec \n', t_per_run)
 % =========================================================================
 % Persist results, plus the coupling settings used, so each output file is
 % self-describing (mirrors call_NTM2.m's convention of saving inputs too).
 % =========================================================================
 outdir       = fileparts(mfilename('fullpath'));
-filename_out = fullfile(outdir, 'call_NTM_brandontest_output.mat');
-save(filename_out, "N", "M", "R_Edge_Mass", "coupling_term_in", ...
+filename_out = fullfile(outdir, 'call_NTM_brandontest_mu_05_output.mat');
+save(filename_out, "N", "M", "R_Edge_Mass", "Vol","t", "coupling_term_in", ...
      "kappa_mu_r_in", "kappa_mu_u_in", "kappa_delta_in", "kappa_epsilon_in");
 
 fprintf('Saved debug run to %s\n', filename_out);
