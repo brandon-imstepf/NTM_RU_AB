@@ -1,0 +1,95 @@
+% note_abeta_sensitivity.tex
+% Standalone technical note on the Amyloid-Beta sub-model's sensitivity structure.
+% No preamble / \begin{document} included -- meant to be pasted into an existing document.
+% Assumes amsmath (for align/cases) is already loaded.
+
+\subsection{Structural Insensitivity of the Amyloid-\texorpdfstring{$\beta$}{Beta} Field to the Diffusion Coefficient}
+\label{sec:abeta-dif-inertness}
+
+\subsubsection{Model}
+
+The Amyloid-$\beta$ field $B_i(t)$ in region $i$ is pre-computed, independently of the tau transport dynamics, as the solution of
+\begin{equation}
+    \frac{dB_i}{dt} = r\, B_i (1 - B_i) \;+\; D \sum_{j} C_{ij} \left( B_j - B_i \right),
+    \qquad B_i(0) = B_0 = 0.05 \quad \forall i,
+    \label{eq:abeta-ode}
+\end{equation}
+where $r$ is a global (region-independent) logistic growth rate, $D$ is the diffusion coefficient (\texttt{Dif} in the implementation), and $C_{ij}$ is the (thresholded, symmetric) structural connectivity matrix restricted to the $n_{\mathrm{roi}} = 30$ regions of the \texttt{Hippocampus+PC+RSP} subset. The second term is a graph-Laplacian diffusion operator over the connectome.
+
+\subsubsection{Proposition}
+
+\textbf{Under a spatially uniform initial condition and a spatially uniform growth rate, the diffusion coefficient $D$ has no effect on $B(t)$ for any $t \geq 0$.}
+
+\textit{Argument.} At $t=0$, $B_j(0) - B_i(0) = 0$ for every pair $(i,j)$, so the diffusion term in \eqref{eq:abeta-ode} vanishes identically, regardless of $D$. The local growth term $r B_i(1-B_i)$ is likewise identical across all $i$, since $B_i(0)$ is identical across all $i$ and $r$ carries no region index. Hence $\dot B_i(0)$ is the same for every region, and $B(t)$ remains spatially uniform on $[0, dt]$ for any infinitesimal step. By induction, if $B(t)$ is spatially uniform at time $t$, both the growth term and the (identically zero) diffusion term preserve that uniformity going forward. Therefore $B_i(t) = b(t)$ for all $i$ and all $t \geq 0$, where $b(t)$ solves the scalar logistic equation $\dot b = r\,b(1-b)$, $b(0) = B_0$ --- a solution in which $D$ never appears. $\blacksquare$
+
+\subsubsection{Numerical verification}
+
+Equation \eqref{eq:abeta-ode} was solved (\texttt{ode45}, default tolerances) over the true $30 \times 30$ thresholded connectome for the two extreme sweep values of $D$, holding $r = 1$ fixed, over $t \in [0, 1]$:
+
+\begin{center}
+\begin{tabular}{lc}
+\hline
+Quantity & Value \\
+\hline
+$\max_{i,t} \lvert B_i(t; D{=}0.1) - B_i(t; D{=}2.0) \rvert$ & $1.263 \times 10^{-4}$ \\
+$\mathrm{std}_i\, B_i(t{=}1; D{=}0.1)$ (spatial spread at final $t$) & $2.06 \times 10^{-5}$ \\
+$\mathrm{std}_i\, B_i(t{=}1; D{=}2.0)$ & $3.79 \times 10^{-5}$ \\
+\hline
+\end{tabular}
+\end{center}
+
+Both quantities are at the level of ODE solver tolerance, not a resolved effect: $B(t)$ stays spatially uniform to numerical precision regardless of $D$, confirming the proposition. \textbf{This result holds for any $t$, including the full simulation horizon} --- it is not a short-time-window artifact, and a longer \texttt{trange} will not recover $D$-sensitivity.
+
+\subsubsection{Implication for sensitivity analysis design}
+
+Because $D$ (\texttt{Dif}) cannot influence the model output under the current initial condition, including it as a factor in a variance-based (Sobol) sensitivity analysis would waste sample budget on a dimension with a provably null first-order and total-order index. Two options:
+\begin{itemize}
+    \item \textbf{Drop $D$} as a swept/sampled factor entirely, or
+    \item \textbf{Break the spatial uniformity} that makes it inert --- e.g., seed $B_0$ non-uniformly (co-localized with the tau seed regions, analogous to how tau itself is seeded), or make $r$ region-dependent. Either change would give the diffusion term a genuine role and make $D$ a meaningful sensitivity-analysis factor.
+\end{itemize}
+
+\subsection{Time-Scale Dependence of Growth-Rate (\texorpdfstring{$r$}{r}) Sensitivity}
+\label{sec:abeta-r-timescale}
+
+Unlike $D$, the growth rate $r$ has an effect on $B(t)$ even under spatial uniformity, since it directly sets the rate of the scalar logistic curve $b(t)$. However, because $B_0 = 0.05$ is small relative to the logistic carrying capacity (normalized to $1$), the two extreme sweep values of $r$ have not yet meaningfully separated at short $t$ --- they require time to diverge.
+
+Holding $D = 1$ fixed, comparing $r = 0.1$ and $r = 2.0$:
+
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+$t$ & $B(t; r{=}0.1)$ & $B(t; r{=}2.0)$ & $|\Delta B|$ (\% of $B_0$) \\
+\hline
+$0.05$ (debug \texttt{trange} horizon) & $0.050240$ & $0.054970$ & $9.46\%$ \\
+$1.0$ (full \texttt{trange} horizon)   & $0.054970$ & $0.280006$ & $450.07\%$ \\
+\hline
+\end{tabular}
+\end{center}
+
+The two extreme $r$ values differ by less than $10\%$ of $B_0$ at the debug horizon, versus a $\sim 4.5\times B_0$ separation at the full horizon --- a qualitative change, not merely a scaling one. (As an internal-consistency check: $B(t{=}1; r{=}0.1) = B(t{=}0.05; r{=}2.0) = 0.054970$ to solver precision, consistent with the near-decoupled logistic solution depending approximately on the product $rt$ when the Laplacian correction is negligible.)
+
+\textbf{Conclusion:} a sensitivity sweep run at the short debug \texttt{trange} substantially understates $r$'s true influence on the Amyloid-$\beta$ field, and by extension on any downstream quantity that depends on it. Sweep runs intended to characterize $r$-sensitivity must use the full-resolution \texttt{trange}.
+
+\subsection{Full-Resolution Confirmation: Does the Aβ-Level Divergence Propagate to the Transport-Model QoIs?}
+\label{sec:kappa-fullres}
+
+Sections~\ref{sec:abeta-dif-inertness}--\ref{sec:abeta-r-timescale} establish behavior of the Amyloid-$\beta$ field in isolation. Whether that translates into a resolvable sensitivity signal in the tau-transport quantities of interest (\texttt{spread\_final}, \texttt{spread\_t50}, \texttt{burden\_final}) requires running the full coupled transport model, not just the Aβ sub-model.
+
+The full coupled model was run at the sweep grid's two extreme $\kappa_{\mu_u}$ endpoints ($\kappa_{\mu_u} \in \{0, 10\}$, i.e.\ $\kappa_{\mathrm{frac}} \in \{0, 2\}$ against a baseline $\mu_{u,0} = 5$), at $r=1$, $D=1$, over the full-resolution \texttt{trange} (154 non-uniform steps, $t \in [0,1]$):
+
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+$\kappa_{\mu_u}$ & \texttt{spread\_final} & \texttt{spread\_t50} & \texttt{burden\_final} \\
+\hline
+$0$  & $1.112769$ & $0.2750$ & $340333.14$ \\
+$10$ & $1.123703$ & $0.2800$ & $340300.74$ \\
+\hline
+\multicolumn{4}{l}{\footnotesize abs.\ diff: $0.010934$ ($0.98\%$) \hspace{1em} one \texttt{trange} step \hspace{1em} $32.40$ ($0.01\%$, and \emph{decreasing})} \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{This result is more sobering than Section~\ref{sec:abeta-r-timescale} alone would suggest.} Even at full resolution, with a $\kappa_{\mu_u}$ swing large enough to raise the uptake rate by double digits of percent over the course of the run, \texttt{spread\_final} moves by under $1\%$ and \texttt{burden\_final} moves by $0.01\%$ --- the latter comparable in magnitude to \texttt{ode15s} integration tolerance, i.e.\ not clearly distinguishable from numerical noise. \texttt{spread\_t50} shifts by exactly one discretization step, which is at least directionally consistent (higher uptake $\to$ marginally slower/later half-spread) but is too coarse a resolution to call a clean signal on its own.
+
+This decouples the earlier trange finding from the mu\_u sensitivity question: it \emph{is} true that the debug \texttt{trange} understates the Amyloid-$\beta$ field's own time-dependence (Sec.~\ref{sec:abeta-r-timescale}), but that divergence does not appear to propagate strongly into these particular whole-brain QoIs \emph{through the $\mu_u$ coupling channel specifically}, at least at this end of the parameter range. This may simply be a property of how uptake-rate perturbations of this magnitude interact with these aggregate, whole-brain summary statistics (as opposed to a more localized or edge-resolved QoI), rather than a further bug or artifact --- but it is a caveat worth carrying into the design of the full sweep and, later, the Sobol analysis: not every coupling term should be assumed to produce a resolvable signal in these three QoIs even given the full time horizon.

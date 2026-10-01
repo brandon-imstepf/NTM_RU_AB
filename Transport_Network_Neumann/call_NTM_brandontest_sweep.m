@@ -74,6 +74,22 @@ baseline_val = [up_in_0, rel_in_0, delta_in, epsilon_in];
 nTerms = numel(coupling_terms);
 nKappa = numel(kappa_frac);
 total_runs = nTerms * nKappa *nR * nDif;
+
+% slurm logic % 9/17/2026
+sz = [nTerms, nKappa, nR, nDif];
+
+in_slurm = ~isempty(getenv('SLURM_ARRAY_TASK_ID'));
+if in_slurm
+    n_segments = 8;
+    task_id    = str2double(getenv('SLURM_ARRAY_TASK_ID')); % 0-based
+else
+    n_segments = 1; task_id = 0; %run as usual
+end 
+seg_size = ceil(total_runs / n_segments);
+my_run_idx =  (task_id*seg_size+1) : min((task_id+1)*seg_size, total_runs);
+fprintf('Segment %d/%d handling runs %d-%d of %d\n', ...
+    task_id+1, n_segments, my_run_idx(1),my_run_idx(end), total_runs);
+
 run_count = 0;
 
 spread_final = nan(nTerms,nKappa, nR, nDif);
@@ -96,32 +112,33 @@ trange_in = 0:0.01:0.05;
 
 tic
 
+% Failure Debugging (9/25/2026)
+failures = struct('run_idx', {}, 'term', {}, 'kappa_frac', {}, 'r_frac', {}, 'Dif_frac', {}, 'fail_x', {}, 'message', {});
+
 % =========================================================================
 % Run the model
 % =========================================================================
 
-for ti = 1:nTerms
+for run_idx = my_run_idx
+    [ti, ki, ri, di] = ind2sub(sz, run_idx);
     term = coupling_terms{ti};
-    kappa_mu_u_in = 1; kappa_mu_r_in = 1; kappa_delta_in=1; kappa_epsilon_in=1; % unused unless selected
-    for ki = 1:nKappa
-        kappa_val = kappa_frac(ki) * baseline_val(ti);
-        switch term
-            case 'mu_u',    kappa_mu_u_in       = kappa_val;
-            case 'mu_r',    kappa_mu_r_in       = kappa_val;
-            case 'delta',   kappa_delta_in      = kappa_val;
-            case 'epsilon', kappa_epsilon_in    = kappa_val;
-        end
-        for ri = 1:nR
-            r_in = r_frac(ri) * r_nominal;
-            for di = 1:nDif
-                Dif_in = Dif_frac(di)*Dif_nominal;
 
-                run_count = run_count + 1;
-                fprintf('[%d/%d] term=%s kappa_frac=%.2f r_frac=%.2f Dif_frac=%.2f [%d/%d,%d/%d,%d/%d,%d/%d]\n', ...
-                    run_count, total_runs, term, kappa_frac(ki), r_frac(ri), Dif_frac(di), ti,nTerms,ki,nKappa,ri,nR,di,nDif);
-                
-            
-                [N,M,~] = network_transport_model_Neu_func(matdir, ...
+    kappa_val = kappa_frac(ki) * baseline_val(ti);
+    kappa_mu_u_in=1; kappa_mu_r_in=1; kappa_delta_in=1; kappa_epsilon_in=1;
+    switch term
+        case 'mu_u',    kappa_mu_u_in    = kappa_val;
+        case 'mu_r',    kappa_mu_r_in    = kappa_val;
+        case 'delta',   kappa_delta_in   = kappa_val;
+        case 'epsilon', kappa_epsilon_in = kappa_val;
+    end
+    r_in   = r_frac(ri)   * r_nominal;
+    Dif_in = Dif_frac(di) * Dif_nominal;
+
+    run_count = run_count + 1;
+    fprintf('[%d/%d | seg %d/%d] term=%s kappa_frac=%.2f r_frac=%.2f Dif_frac=%.2f\n', ...
+        run_idx, total_runs, task_id+1, n_segments, term, kappa_frac(ki), r_frac(ri), Dif_frac(di));
+            try
+                [N,M,~, Vol, t] = network_transport_model_Neu_func(matdir, ...
                     'alpha',                alpha_in, ...
                     'F_edge_0',             F_edge_0_in, ...
                     'beta',                 beta_in, ...
@@ -149,21 +166,31 @@ for ti = 1:nTerms
                     'study',                study_in);
             
                 i_zero = (N(:,1)==0);
-                spread_series = sum(N(i_zero,:),1);
-                spread_final(ti,ki,ri,di) = spread_series(end);
-                half = 0.5*spread_final(ti,ki,ri,di);
-                idx = find(spread_series >= half,1,'first');
-                if isempty(idx)
-                    spread_t50(ti,ki,ri,di) = NaN; % rwk debug
-                else
-                    spread_t50(ti,ki,ri,di) = trange_in(idx);
-                end 
-                burden_final(ti,ki,ri,di) = sum(N(:,end) + M(:,end)); % unweighted 
-            end
-        end
+    spread_series = sum(N(i_zero,:),1);
+    spread_final(ti,ki,ri,di) = spread_series(end);
+    half = 0.5*spread_final(ti,ki,ri,di);
+    idx = find(spread_series >= half,1,'first');
+    if ~isempty(idx)
+        spread_t50(ti,ki,ri,di) = t(idx);          % t from the return, not trange_in
     end
+    burden_final(ti,ki,ri,di) = sum(Vol .* (N(:,end) + M(:,end)));   % now volume-weighted
+            catch ME
+             fail_x = NaN;
+                tok = regexp(ME.message, 'Failure at t=([\d.eE+-]+)', 'tokens', 'once');
+                if ~isempty(tok), fail_x = str2double(tok{1}); end
+            
+                failures(end+1) = struct('run_idx', run_idx, 'term', term, ...
+                    'kappa_frac', kappa_frac(ki), 'r_frac', r_frac(ri), 'Dif_frac', Dif_frac(di), ...
+                    'fail_x', fail_x, 'message', ME.message);
+                fprintf('  FAILED [%d/%d] term=%s kappa_frac=%.2f r_frac=%.2f Dif_frac=%.2f fail_x=%.4f\n', ...
+                    run_idx, total_runs, term, kappa_frac(ki), r_frac(ri), Dif_frac(di), fail_x);
+            end
 end
-assert(~any(isnan(spread_final(:))), 'sweep left some spread_final cells unfilled!'); % rwk_debug
 
-save('sensitivity_sweep_output.mat', 'coupling_terms', 'kappa_frac', ...
-    'baseline_val', 'spread_final', 'spread_t50', 'burden_final');
+n_failed = sum(isnan(spread_final(my_run_idx)));
+assert(~any(isnan(spread_final(my_run_idx))), 'segment left some of its OWN cells unfilled!');
+
+outdir = fileparts(mfilename('fullpath'));
+save(fullfile(outdir, sprintf('fixed_sweep_output_task%02d.mat', task_id)), ...
+    'task_id','n_segments','sz','coupling_terms','kappa_frac','r_frac','Dif_frac', ...
+    'baseline_val','spread_final','spread_t50','burden_final');

@@ -1,4 +1,4 @@
-function [N, M, R_Edge_Mass] = network_transport_model_Neu_func(matdir, varargin)
+function [N, M, R_Edge_Mass, Vol, t] = network_transport_model_Neu_func(matdir, varargin)
 % network_transport_model_Neu_func  Main NTM solver: time-evolve tau spread on the brain network.
 %
 % =========================================================================
@@ -94,6 +94,7 @@ mu_u_L_   = mu_u_0_;    % uptake rate at synapse end
 
 % --- Amyloid Beta terms ---
 Bsol = 0; % Initialize Bsol, will be solved in section ~8.5
+B0_seed_ = 42; % seed for spatially-heterogeneous Abeta initial condition % 9/17/2026
 Abeta = 0; % Initalize, will be solved in section ~8.5
 r_ = 1;
 Dif_ = 1; % AB Diffusion term
@@ -189,6 +190,7 @@ addParameter(ip, 'plotting',          plotting_,           validLogical);
 addParameter(ip, 'axon_div',          axon_div_,           validAxonDiv);
 addParameter(ip, 'r',                 r_,                  validScalar); % Logical growth term in AB calc.
 addParameter(ip, 'Dif',               Dif_,                validScalar); % Diffusion term for AB
+addParameter(ip, 'B0_seed',           B0_seed_,            validScalar);
 addParameter(ip, 'coupling_term',     coupling_term_,      validCouplingTerm);
 %addParameter(ip, 'mu_r_hat',          mu_r_hat_,           validScalar);
 addParameter(ip, 'kappa_mu_r',        kappa_mu_r_,         validScalar);
@@ -384,7 +386,16 @@ nt = length(t);
 % weights C_ij.
 %
 % ===========
-B0 = 0.05*ones(nroi,1); % Initial conditions for Bnot. This assumes globally diffuse.
+%B0 = 0.05*ones(nroi,1); % Initial conditions for Bnot. This assumes globally diffuse.
+% new B0 that is non-uniform.
+rng(ip.Results.B0_seed);
+Dmat = DefaultAtlas.centroid_distance(inds, inds);      % real inter-region distance [nroi x nroi]
+ell  = median(Dmat(Dmat > 0));                          % smoothing length scale
+K    = exp(-(Dmat.^2) / (2*ell^2)) + 1e-6*eye(nroi);    % Gaussian kernel, tiny ridge for stability
+noise = chol(K, 'lower') * randn(nroi, 1);
+noise = (noise - min(noise)) / (max(noise) - min(noise));  % rescale to [0,1]
+B0 = 0.02 + 0.06*noise;                                 % same rough mean/scale as the old flat 0.05
+
 [~,Bsol] = ode45(@(t,B) ip.Results.r*B .*(1-B) + ip.Results.Dif*( Conn*B - sum(Conn,2).*B ) ,t,B0); % Logistic growth + Laplacian
 Abeta = Bsol.'; % Make same shape as Gamma1
 
