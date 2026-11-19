@@ -76,6 +76,7 @@ nTerms = numel(coupling_terms);
 nKappa = numel(kappa_frac);
 total_runs = nTerms * nKappa *nR * nDif;
 
+sz = [nTerms, nKappa, nR, nDif];
 
 in_slurm = ~isempty(getenv('SLURM_ARRAY_TASK_ID'));
 if in_slurm
