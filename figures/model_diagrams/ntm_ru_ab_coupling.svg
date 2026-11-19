@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 660" role="img" aria-label="Amyloid-beta reaction-diffusion field at each node, computed once and feeding one-way into that node's own release and uptake rates, on top of the same release and uptake edge diagram with soluble and insoluble tau pools">
+  <title>NTM_RU + Abeta: amyloid coupling into release and uptake</title>
+  <rect x="0" y="0" width="1000" height="660" fill="#fcfcfb"/>
+
+  <defs>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#1a7a40"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#b5342f"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#8a8a8a"/>
+    </marker>
+    <marker id="arrowViolet" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6250d6"/>
+    </marker>
+  </defs>
+
+  <!-- Context line (no title) -->
+  <text x="500" y="24" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#5c5c5c">A&#946; reacts and diffuses across the connectome; it feeds one-way into each node&#8217;s own kinetic parameters</text>
+
+  <!-- Abeta field, node j and node i (close above their nodes) -->
+  <circle cx="105" cy="104" r="34" fill="#f1ecfb" stroke="#6250d6" stroke-width="2.25"/>
+  <text x="105" y="100" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#3c2f8f">A_j(t)</text>
+  <text x="105" y="116" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#6250d6">at node j</text>
+
+  <circle cx="895" cy="104" r="34" fill="#f1ecfb" stroke="#6250d6" stroke-width="2.25"/>
+  <text x="895" y="100" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#3c2f8f">A_i(t)</text>
+  <text x="895" y="116" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" fill="#6250d6">at node i</text>
+
+  <!-- growth self-loops -->
+  <path d="M83,78 C66,56 90,36 110,54" fill="none" stroke="#6250d6" stroke-width="1.5" marker-end="url(#arrowViolet)"/>
+  <text x="62" y="42" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#6250d6">r&#183;A(1&#8722;A)</text>
+  <path d="M873,78 C856,56 880,36 900,54" fill="none" stroke="#6250d6" stroke-width="1.5" marker-end="url(#arrowViolet)"/>
+  <text x="852" y="42" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#6250d6">r&#183;A(1&#8722;A)</text>
+
+  <!-- diffusion stubs fanning outward -->
+  <line x1="75" y1="96" x2="38" y2="86" stroke="#6250d6" stroke-width="1.25" stroke-dasharray="4,3"/>
+  <line x1="75" y1="118" x2="38" y2="130" stroke="#6250d6" stroke-width="1.25" stroke-dasharray="4,3"/>
+  <line x1="925" y1="96" x2="962" y2="86" stroke="#6250d6" stroke-width="1.25" stroke-dasharray="4,3"/>
+  <line x1="925" y1="118" x2="962" y2="130" stroke="#6250d6" stroke-width="1.25" stroke-dasharray="4,3"/>
+
+  <!-- compact combined note -->
+  <text x="500" y="148" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6250d6">+ Dif &#183; diffusion across the connectome &#8212; solved once (ode45), before the &#964; time loop, one-way</text>
+
+  <!-- short coupling arrows straight down into the nodes below -->
+  <line x1="105" y1="139" x2="105" y2="238" stroke="#6250d6" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrowViolet)"/>
+  <line x1="895" y1="139" x2="895" y2="238" stroke="#6250d6" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrowViolet)"/>
+  <text x="500" y="196" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#3c2f8f">&#954;&#183;A(t) &#8594; added into that node&#8217;s own mu_u, mu_r, &#948;, &#949;</text>
+
+  <!-- ===== Main release/uptake diagram ===== -->
+
+  <!-- Node j: holds soluble N_j and insoluble M_j, linked by fragmentation/aggregation Gamma -->
+  <circle cx="105" cy="300" r="60" fill="#eaf1fb" stroke="#2a78d6" stroke-width="2.5"/>
+  <text x="105" y="289" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#0b0b0b">node j</text>
+  <text x="105" y="310" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#0b0b0b">N_j (&#915;) M_j</text>
+  <text x="105" y="372" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#6b6b6b">M_j = g(N_j)</text>
+  <text x="105" y="390" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">source / soma pool</text>
+
+  <!-- Node i -->
+  <circle cx="895" cy="300" r="60" fill="#eaf1fb" stroke="#2a78d6" stroke-width="2.5"/>
+  <text x="895" y="289" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#0b0b0b">node i</text>
+  <text x="895" y="310" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#0b0b0b">N_i (&#915;) M_i</text>
+  <text x="895" y="372" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#6b6b6b">M_i = g(N_i)</text>
+  <text x="895" y="390" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">target / synapse pool</text>
+
+  <!-- Axon compartments -->
+  <rect x="235" y="268" width="150" height="64" rx="4" fill="#f7f7f5" stroke="#b9b7b0" stroke-width="1.5"/>
+  <text x="310" y="298" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#0b0b0b">presynaptic</text>
+  <text x="310" y="317" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">[0, L1]</text>
+
+  <rect x="385" y="268" width="60" height="64" fill="#f7f7f5" stroke="#b9b7b0" stroke-width="1.5"/>
+  <text x="415" y="305" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#0b0b0b">AIS</text>
+
+  <rect x="445" y="268" width="320" height="64" rx="4" fill="#f7f7f5" stroke="#b9b7b0" stroke-width="1.5"/>
+  <text x="605" y="296" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#0b0b0b">axon proper &#8212; active transport</text>
+  <text x="605" y="316" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">aggregation &#947;&#8321; &#183; motor-crowding &#948; &#183; velocity-coupling &#949;</text>
+
+  <!-- x=0 / x=L ticks -->
+  <line x1="235" y1="332" x2="235" y2="340" stroke="#6b6b6b" stroke-width="1"/>
+  <text x="235" y="357" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">x=0</text>
+  <line x1="765" y1="332" x2="765" y2="340" stroke="#6b6b6b" stroke-width="1"/>
+  <text x="765" y="357" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">x=L</text>
+
+  <!-- Left boundary arrows (x=0): uptake in (red, Abeta-coupled), release out (green, unchanged) -->
+  <text x="200" y="256" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#b5342f">uptake Mu_u_hat&#183;N_j</text>
+  <line x1="172" y1="270" x2="228" y2="270" stroke="#d64545" stroke-width="3" marker-end="url(#arrowRed)"/>
+  <line x1="228" y1="316" x2="172" y2="316" stroke="#2ea043" stroke-width="3" marker-end="url(#arrowGreen)"/>
+  <text x="200" y="337" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#1a7a40">release mu_r_0&#183;B</text>
+
+  <!-- Right boundary arrows (x=L): release out (green, unchanged), uptake in (red, Abeta-coupled) -->
+  <text x="800" y="256" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#1a7a40">release mu_r_L&#183;n(L)</text>
+  <line x1="772" y1="270" x2="828" y2="270" stroke="#2ea043" stroke-width="3" marker-end="url(#arrowGreen)"/>
+  <line x1="828" y1="316" x2="772" y2="316" stroke="#d64545" stroke-width="3" marker-end="url(#arrowRed)"/>
+  <text x="800" y="337" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#b5342f">uptake Mu_u_hat&#183;N_i</text>
+
+  <!-- Shooting / mass-balance condition, with the Abeta-coupled uptake rate and the quasi-static closure -->
+  <rect x="100" y="398" width="800" height="92" rx="6" fill="#f3f6fa" stroke="#d8dee6" stroke-width="1"/>
+  <text x="500" y="420" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13.5" fill="#0b0b0b">Shooting condition &#8212; same form, but now Mu_u_hat varies with A(t):</text>
+  <text x="500" y="445" text-anchor="middle" font-family="Consolas, 'Courier New', monospace" font-size="15" fill="#0b0b0b">&#8722;mu_r_0&#183;B + Mu_u_hat&#183;N_j + &#8747;F_edge_0 dx &#8722; mu_r_L&#183;n(L) + Mu_u_hat&#183;N_i = 0</text>
+  <text x="500" y="471" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#4a4a4a">v(n) = v_a(1+&#948;n)(1&#8722;&#949;m) &#8722; v_r,&#160;&#160;&#160; m = &#947;&#8321;n&#178;/(&#946;&#8722;&#947;&#8322;n)&#160;&#160; [quasi-static closure]</text>
+
+  <text x="500" y="524" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">J&#8320; (at node j) and J_L (at node i) from every edge still sum into each node&#8217;s own mass-balance ODE.</text>
+
+  <!-- Legend -->
+  <circle cx="330" cy="556" r="6" fill="#d64545"/>
+  <text x="344" y="561" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#0b0b0b">uptake &#8212; pool &#8594; axon</text>
+  <circle cx="580" cy="556" r="6" fill="#2ea043"/>
+  <text x="594" y="561" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#0b0b0b">release &#8212; axon &#8594; pool</text>
+  <text x="500" y="582" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">N = soluble tau monomers &#160;&#160;&#160; M = insoluble tau aggregates</text>
+
+  <!-- Coupling switchboard summary -->
+  <text x="500" y="614" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#0b0b0b">Coupling switchboard (coupling_term list): parameter_hat = parameter + &#954;&#183;A(t)</text>
+  <text x="500" y="636" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#6b6b6b">mu_u (uptake) &#8594; ACTIVE, shown above in violet &#160;&#160;|&#160;&#160; mu_r (release), &#948; (crowding), &#949; (coupling) &#8594; same form available, currently OFF</text>
+
+  <!-- Source attribution -->
+  <text x="978" y="652" text-anchor="end" font-family="Segoe UI, Arial, sans-serif" font-size="9.5" fill="#9b9b9b">release/uptake mechanism per Barron et al. 2026 (bioRxiv), Fig. 1 / eqs. 1&#8211;5; A&#946; coupling is this repo&#8217;s own extension</text>
+</svg>

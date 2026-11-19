@@ -50,25 +50,18 @@ axon_div     = 'r1';     % axon mass attribution
 % =========================================================================
 % Amyloid-Beta parameters
 % =========================================================================
-r_in   = [0.1,0.5,1.0,2.0];               % logistic growth rate for Abeta
-Dif_in = [0.1,0.5,1.0,2.0];                % Abeta diffusion coefficient over the connectome
 
-%r_in   = 1;                                     % logistic growth rate for Abeta
-%Dif_in = 1;
+r_in   = 1;                                     % logistic growth rate for Abeta
+Dif_in = 1;
 
-% --- Coupling selector: exactly ONE of these per run ---
+% --- Coupling selector: ONE or more of these per run ---
 %   'mu_u' | 'mu_r' | 'delta' | 'epsilon' | 'none'
-coupling_term_in = 'mu_u';
+coupling_term_in = {'mu_u'};
 
-kappa_mu_r_in    = [0,0.1,0.5,1,2];
-kappa_mu_u_in    = [0,0.1,0.5,1,2];
-kappa_delta_in   = [0,0.1,0.5,1,2];
-kappa_epsilon_in = [0,0.1,0.5,1,2];
-
-%kappa_mu_r_in    = 1;
-%kappa_mu_u_in    = 0.5;
-%kappa_delta_in   = 1;
-%kappa_epsilon_in = 1;
+kappa_mu_r_in    = 0.5;
+kappa_mu_u_in    = 1;
+kappa_delta_in   = 1;
+kappa_epsilon_in = 1;
 
 
 
@@ -80,8 +73,8 @@ resmesh_in           = 'coarse';              % 250-pt axon mesh (vs 1000 for 'f
 study_in             = 'Hurtado';
 
 
-%trange_in = 0:0.01:0.05;
-trange_in =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:1];
+trange_in = 0:0.1:1;
+%trange_in =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:1];
 
 tic
 
@@ -122,7 +115,9 @@ fprintf('Single run took %.1f sec \n', t_per_run)
 % self-describing (mirrors call_NTM2.m's convention of saving inputs too).
 % =========================================================================
 outdir       = fileparts(mfilename('fullpath'));
-filename_out = fullfile(outdir, 'call_NTM_brandontest_mu_05_output.mat');
+coupling_str = strjoin(cellstr(coupling_term_in), '-');
+timestamp    = char(datetime('now','Format','yyyyMMdd_HHmmss'));
+filename_out = fullfile(outdir, sprintf('call_NTM_brandontest_lsq_%s_%s.mat', coupling_str, timestamp));
 save(filename_out, "N", "M", "R_Edge_Mass", "Vol","t", "coupling_term_in", ...
      "kappa_mu_r_in", "kappa_mu_u_in", "kappa_delta_in", "kappa_epsilon_in");
 

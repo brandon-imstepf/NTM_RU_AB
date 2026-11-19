@@ -1,0 +1,127 @@
+function compare_sims(sim_paths)
+    % Compare saved NTM_ru_ab laptop runs: regional tau burden over time.
+    % Read-only: loads existing .mat outputs, writes figures to out_dir only.
+    % Does not touch anything inside the NTM_ru_ab repo.
+
+    path_n = numel(sim_paths)
+    
+    
+    %cd('C:\Users\USER\Documents\Code\NTM_ru_ab\Transport_Network_Neumann');
+    out_dir = '\figures';
+    if ~isfolder(out_dir), mkdir(out_dir); end
+    
+    %% Palette (dataviz skill reference palette, light mode)
+    blue   = double([0x2a 0x78 0xd6])/255; % categorical slot 1 -- baseline / none
+    orange = double([0xeb 0x68 0x34])/255; % categorical slot 2 -- mu_u coupled (today's run)
+    aqua   = double([0x1b 0xaf 0x7a])/255; % slot 3 -- older mu_u run, kappa=1.0
+    yellow = double([0xed 0xa1 0x00])/255; % slot 4 -- older mu_u run, kappa=0.5
+    ink_primary   = double([0x0b 0x0b 0x0b])/255;
+    ink_secondary = double([0x52 0x51 0x4e])/255;
+    ink_muted     = double([0x89 0x87 0x81])/255;
+    grid_hair     = double([0xe1 0xe0 0xd9])/255;
+    surface_c     = double([0xfc 0xfc 0xfb])/255;
+    
+    seq_light = double([0xcd 0xe2 0xfb])/255; % sequential ramp step 100
+    seq_dark  = double([0x0d 0x36 0x6b])/255; % sequential ramp step 700
+    make_seq  = @(n) interp1([0 1], [seq_light; seq_dark], linspace(0,1,n));
+    
+    diverge_neg = double([0xd0 0x3b 0x3b])/255; % red pole
+    diverge_mid = double([0xf0 0xef 0xec])/255; % neutral gray midpoint
+    diverge_pos = double([0x2a 0x78 0xd6])/255; % blue pole
+    make_div = @(n) interp1([0 0.5 1], [diverge_neg; diverge_mid; diverge_pos], linspace(0,1,n));
+    
+    %% Load the four completed laptop runs
+    %none_d = load('call_NTM_brandontest_none.mat');       % coupling_term = none  (baseline, today)
+    %muu_d  = load('call_NTM_brandontest_mu_u_only.mat');   % coupling_term = mu_u, kappa_mu_u = 1.5 (today)
+    %k10_d  = load('call_NTM_brandontest_output.mat');      % coupling_term = mu_u, kappa_mu_u = 1.0 (Aug 31)
+    %k05_d  = load('call_NTM_brandontest_mu_05_output.mat');% coupling_term = mu_u, kappa_mu_u = 0.5 (Sep 1)
+    
+    % Canonical time axis: call_NTM_brandontest.m's current trange_in. 'none' and
+    % 'mu_u_only' both saved their own t (from today's runs) -- confirm they agree,
+    % then confirm the two older runs have the same NUMBER of timesteps (155) before
+    % reusing this t for them (their files predate the script saving t/Vol at all).
+    t = none_d.t;
+    assert(isequal(t, muu_d.t), 'none vs mu_u_only: time grids differ, not directly comparable');
+    assert(numel(t) == size(k10_d.N,2) && numel(t) == size(k05_d.N,2), ...
+        'older runs have a different number of timesteps than today''s runs -- cannot assume the same time axis');
+    
+    total_none = none_d.N + none_d.M; % [30 regions x 155 timesteps], total tau burden per region
+    total_muu  = muu_d.N  + muu_d.M;
+    total_k10  = k10_d.N  + k10_d.M;
+    total_k05  = k05_d.N  + k05_d.M;
+    nregions = size(total_none,1);
+    
+    fprintf('Loaded 4 runs, %d regions x %d timesteps.\n', nregions, numel(t));
+    fprintf('  none:   max(N)=%.4g max(M)=%.4g\n', max(none_d.N(:)), max(none_d.M(:)));
+    fprintf('  mu_u 1.5: max(N)=%.4g max(M)=%.4g\n', max(muu_d.N(:)), max(muu_d.M(:)));
+    fprintf('  mu_u 1.0: max(N)=%.4g max(M)=%.4g\n', max(k10_d.N(:)), max(k10_d.M(:)));
+    fprintf('  mu_u 0.5: max(N)=%.4g max(M)=%.4g\n', max(k05_d.N(:)), max(k05_d.M(:)));
+    
+    %% Figure 1: region x time heatmaps -- baseline, coupled, and their difference
+    clims = [min([total_none(:); total_muu(:)]), max([total_none(:); total_muu(:)])];
+    
+    fig1 = figure('Color','w','Position',[100 100 1500 430]);
+    tiledlayout(1,3,'TileSpacing','compact','Padding','compact');
+    
+    nexttile;
+    imagesc(t, 1:nregions, total_none, clims); colormap(gca, make_seq(256));
+    set(gca,'YDir','normal','Color',surface_c,'XColor',ink_muted,'YColor',ink_muted);
+    xlabel('time'); ylabel('region');
+    title('Baseline (coupling\_term = none)','Color',ink_primary,'FontWeight','normal');
+    cb = colorbar; cb.Label.String = 'total tau, N+M'; cb.Color = ink_secondary;
+    
+    nexttile;
+    imagesc(t, 1:nregions, total_muu, clims); colormap(gca, make_seq(256));
+    set(gca,'YDir','normal','Color',surface_c,'XColor',ink_muted,'YColor',ink_muted);
+    xlabel('time');
+    title('mu\_u coupled (\kappa_{mu\_u} = 1.5)','Color',ink_primary,'FontWeight','normal');
+    cb = colorbar; cb.Label.String = 'total tau, N+M'; cb.Color = ink_secondary;
+    
+    nexttile;
+    diff_map = total_muu - total_none;
+    dmax = max(abs(diff_map(:)));
+    imagesc(t, 1:nregions, diff_map, [-dmax dmax]); colormap(gca, make_div(256));
+    set(gca,'YDir','normal','Color',surface_c,'XColor',ink_muted,'YColor',ink_muted);
+    xlabel('time');
+    title('Difference (coupled - baseline)','Color',ink_primary,'FontWeight','normal');
+    cb = colorbar; cb.Label.String = '\Delta total tau'; cb.Color = ink_secondary;
+    
+    exportgraphics(fig1, fullfile(out_dir,'fig1_region_time_heatmaps.png'), 'Resolution',150);
+    fprintf('Saved fig1_region_time_heatmaps.png\n');
+    
+    %% Figure 2: global (summed over all 30 regions) tau burden over time, all 4 runs
+    fig2 = figure('Color','w','Position',[100 100 900 550]);
+    ax = axes(); hold(ax,'on');
+    plot(t, sum(total_none,1), 'Color', blue,   'LineWidth', 2, 'DisplayName', 'none (baseline)');
+    plot(t, sum(total_k05,1),  'Color', yellow, 'LineWidth', 2, 'DisplayName', 'mu\_u, \kappa=0.5');
+    plot(t, sum(total_k10,1),  'Color', aqua,   'LineWidth', 2, 'DisplayName', 'mu\_u, \kappa=1.0');
+    plot(t, sum(total_muu,1),  'Color', orange, 'LineWidth', 2, 'DisplayName', 'mu\_u, \kappa=1.5');
+    hold(ax,'off');
+    set(ax,'Color',surface_c,'XColor',ink_muted,'YColor',ink_muted,'GridColor',grid_hair);
+    grid(ax,'on');
+    xlabel('time'); ylabel('global total tau (summed over 30 regions)');
+    title('Global tau burden over time, baseline vs mu\_u coupling strength','Color',ink_primary,'FontWeight','normal');
+    lgd = legend('Location','best'); lgd.Box = 'off'; lgd.TextColor = ink_secondary;
+    
+    exportgraphics(fig2, fullfile(out_dir,'fig2_global_burden_vs_coupling_strength.png'), 'Resolution',150);
+    fprintf('Saved fig2_global_burden_vs_coupling_strength.png\n');
+    
+    %% Figure 3: per-region difference at final timepoint (coupled - baseline), sorted
+    fig3 = figure('Color','w','Position',[100 100 900 500]);
+    final_diff = total_muu(:,end) - total_none(:,end);
+    [sorted_diff, order] = sort(final_diff, 'descend');
+    bar_colors = zeros(nregions,3);
+    bar_colors(sorted_diff>=0,:) = repmat(diverge_pos, sum(sorted_diff>=0), 1);
+    bar_colors(sorted_diff<0,:)  = repmat(diverge_neg, sum(sorted_diff<0), 1);
+    b = bar(sorted_diff, 'FaceColor','flat');
+    b.CData = bar_colors;
+    set(gca,'Color',surface_c,'XColor',ink_muted,'YColor',ink_muted);
+    xlabel('region (sorted by effect size)'); ylabel('\Delta total tau at t=1 (coupled - baseline)');
+    title('Which regions mu\_u coupling (\kappa=1.5) affects most, at final time','Color',ink_primary,'FontWeight','normal');
+    xticks(1:nregions); xticklabels(string(order)); xtickangle(90);
+    
+    exportgraphics(fig3, fullfile(out_dir,'fig3_per_region_final_diff.png'), 'Resolution',150);
+    fprintf('Saved fig3_per_region_final_diff.png\n');
+    
+    fprintf('\nAll figures written to %s\n', out_dir);
+end

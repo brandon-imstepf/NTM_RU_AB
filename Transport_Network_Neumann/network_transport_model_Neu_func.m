@@ -100,7 +100,8 @@ r_ = 1;
 Dif_ = 1; % AB Diffusion term
 
 % --- Coupling Terms ---
-coupling_term_ = 'none'; % which single term is used this run: 'mu_u'|'mu_r'|'delta'|'epsilon'|'none'
+coupling_term_ = {'none'}; % was: 'none'. Now a set of active terms, any combo of
+                            % 'mu_u','mu_r','delta','epsilon', or {'none'} for nothing.
 mu_r_hat_ = 1; % For AB Coupling w/ Release term
 kappa_mu_r_ = 1; % For AB coupling w/ mu_r_hat 
 mu_u_hat_ = 1; % for AB coupling w/ Uptake term
@@ -152,7 +153,10 @@ ip = inputParser;
 validScalar  = @(x) isnumeric(x) && isscalar(x) && (x >= 0);
 validLogical = @(x) validScalar(x) && (x == 0 || x == 1);
 validAxonDiv = @(x) strcmp(x,'r1') | strcmp(x,'half') | strcmp(x,'r2');
-validCouplingTerm = @(x) any(strcmp(x, {'mu_u','mu_r','delta','epsilon','none'}));
+validCouplingTerm = @(x) all(ismember(cellstr(x), {'mu_u','mu_r','delta','epsilon','none'})); % Brandon 10/13/2026
+% was: @(x) any(strcmp(x, {'mu_u','mu_r','delta','epsilon','none'}))
+% The old version only worked for a single char. This one checks that EVERY
+% element of whatever was passed (one string or several) is a valid term name.
 
 addParameter(ip, 'alpha',             alpha_,              validScalar);
 addParameter(ip, 'F_edge_0',          F_edge_0_,           validScalar);
@@ -202,6 +206,8 @@ addParameter(ip, 'kappa_delta',       kappa_delta_,        validScalar);
 addParameter(ip, 'kappa_gamma',       kappa_gamma_,        validScalar);
 addParameter(ip, 'kappa_epsilon',     kappa_epsilon_,      validScalar);
 parse(ip, varargin{:});
+
+active_terms = cellstr(ip.Results.coupling_term);
 
 % =========================================================================
 % SECTION 3: Load data files
@@ -427,6 +433,9 @@ netw_flux_L = zeros([nroi, size(N)]);
 % Stored to warm-start fsolve at the next time step (significant speedup)
 n_ss0 = zeros([nroi, nroi, nt]);
 
+% res_max_hist: max shooting-equation residual across all edges, at each time step
+res_max_hist = zeros(1, nt); % Debugging 11/17
+
 % F_source_edge: cumulative distributed source on each edge [nroi x nroi x nt]
 F_source_edge = zeros([nroi, nroi, nt]);
 
@@ -446,35 +455,35 @@ der = zeros(nroi, nt);
 % =========================================================================
 
 % uptake matrix
-if strcmp(ip.Results.coupling_term,'mu_u')
+if ismember('mu_u', active_terms)
     Mu_u_hat = ip.Results.mu_u_0 + ip.Results.kappa_mu_u * Abeta;
 else
     Mu_u_hat = ip.Results.mu_u_0 * ones(nroi,nt);
 end
 
 % Release Matrix
-if strcmp(ip.Results.coupling_term, 'mu_r')
+if ismember('mu_r',active_terms)
     Mu_r_hat = ip.Results.mu_r_0 + ip.Results.kappa_mu_r * Abeta;
 else
     Mu_r_hat = ip.Results.mu_r_0 * ones(nroi, nt);
 end
 
 % Delta Coupling
-if strcmp(ip.Results.coupling_term, 'delta')
+if ismember('delta', active_terms)
     Delta_hat = ip.Results.delta + ip.Results.kappa_delta * Abeta;
 else
     Delta_hat = ip.Results.delta * ones(nroi, nt);
 end
 
 % Epsilon Coupling
-if strcmp(ip.Results.coupling_term, 'epsilon')
+if ismember('epsilon', active_terms)
     Epsilon_hat = ip.Results.epsilon + ip.Results.kappa_epsilon * Abeta;
 else
     Epsilon_hat = ip.Results.epsilon * ones(nroi, nt);
 end
 
 % debugging 8/27/2026
-fprintf('coupling_term = %s\n', ip.Results.coupling_term); % rwk_debug
+fprintf('coupling_term = %s\n', strjoin(active_terms, ', ')); % rwk_debug % Brandon 10/13/26
 assert(isequal(size(Mu_u_hat), [nroi, nt]), 'Mu_u_hat shape mismatch'); % rwk_debug
 assert(isequal(size(Mu_r_hat), [nroi, nt]), 'Mu_r_hat shape mismatch'); % rwk_debug
 assert(isequal(size(Delta_hat), [nroi, nt]), 'Delta_hat shape mismatch'); % rwk_debug
@@ -552,11 +561,12 @@ fprintf('Flux calculation at initial time \n')
 tic
 
 % Compute the 3 representative fluxes at t=0
-[J_0, J_L, ~, F_source_edge_0, n_ss_init, ~, ~] = ...
+[J_0, J_L, ~, F_source_edge_0, n_ss_init, res_max_hist(1), ~] = ...
     NetworkFluxCalculator_Neu(N_adj_0, N_adj_L, f_ss0, Adj_in, ...
                               'beta',              ip.Results.beta,             ...
                               'delta',             ip.Results.delta,            ...
                               'F_edge_0',          ip.Results.F_edge_0,         ...
+                              'debug_terms',       true,                        ...
                               'epsilon',           ip.Results.epsilon,          ...
                               'frac',              ip.Results.frac,             ...
                               'lambda1_x0',        Lambda1_x0_0,               ...
@@ -683,6 +693,7 @@ for h = 1:(nt-1)
                                       'beta',              ip.Results.beta,             ...
                                       'delta',             ip.Results.delta,            ...
                                       'F_edge_0',          ip.Results.F_edge_0,         ...
+                                      'debug_terms',       true,                        ...
                                       'epsilon',           ip.Results.epsilon,          ...
                                       'frac',              ip.Results.frac,             ...
                                       'lambda1_x0',        Lambda1_x0_app,              ...
@@ -759,10 +770,11 @@ for h = 1:(nt-1)
 
     % Solve the full-network steady-state axon BVP for N(:,h+1)
     [netw_flux_0(:, :, h+1), netw_flux_L(:, :, h+1), ~, ...
-     F_source_edge(:, :, h+1), n_ss0(:, :, h+1), ~, ~] = ...
+     F_source_edge(:, :, h+1), n_ss0(:, :, h+1), res_max_hist(h+1), ~] = ...
         NetworkFluxCalculator_Neu(N_adj_h1, N(:, h+1), n_ss0(:, :, h), Adj_in, ...
                                   'beta',              ip.Results.beta,             ...
                                   'F_edge_0',          ip.Results.F_edge_0,         ...
+                                  'debug_terms',       true,                        ...
                                   'frac',              ip.Results.frac,             ...
                                   'lambda1_x0',        Lambda1_x0_h1,              ...
                                   'lambda1_xL',        Lambda1(:, h+1),            ...

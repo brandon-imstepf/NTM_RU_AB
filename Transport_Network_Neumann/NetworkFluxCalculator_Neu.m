@@ -105,6 +105,10 @@ time_scale_   = 1;        % set to 1 here; caller may pass actual time scale
 % AB-Specific Parameters (Brandon, 7/31/2026)
 % To do
 
+% debug
+solverToggle = "lsq";
+%solverToggle = "fsolve";
+
 
 % Boundary flux constants
 F_edge_0_      = 1e-08 * time_scale_;
@@ -160,6 +164,7 @@ addParameter(ip, 'connectome_subset', connectome_subset_);
 addParameter(ip, 'len_scale',         len_scale_,     validScalar);
 addParameter(ip, 'time_scale',        time_scale_,    validScalar);
 addParameter(ip, 'axon_div',          axon_div_,      validAxonDiv);
+addParameter(ip, 'debug_terms',       false,          validLogical); % >>> DEBUG-ONLY: delete when stiffness debugging is complete <<<
 parse(ip, varargin{:});
 
 % =========================================================================
@@ -405,7 +410,25 @@ assert(numel(epsilon_xL) == nroi, 'epsilon_xL length does not match nroi'); % rw
 % rows/columns (sliced variables), not by arbitrary index sets, so we
 % accumulate into temp arrays and then unpack below.
 % =========================================================================
-parfor i = 1:nroi
+
+% >>> DEBUG-ONLY BLOCK (axon stiffness investigation) - DELETE WHEN DONE <<<
+% Switched from parfor to a plain for-loop, and added the try/catch + term_log
+% below, so ode_ss_axon's intermediate terms can be captured even when the
+% shooting solve crashes. To restore the production version: delete this
+% block down through the two other "<<< END DEBUG-ONLY BLOCK >>>" markers
+% (one around the catch below, one inside ode_ss_axon), restore the plain
+% "if ~isempty(tau_x0_i) ... end" without the surrounding try/catch, and
+% uncomment the parfor line.
+%parfor i = 1:nroi % UNCOMMENT ME AFTER DEBUGGING!!!!
+fprintf("CURRENTLY DEBUGGING. THIS IS NOT A SERIOUS RUN.\n")
+fprintf("Solving using %s.\n",solverToggle)
+term_log = struct('region_i',{}, 'call',{}, 'x',{}, 'n',{}, 'B',{}, 'gamma1',{}, ...
+    'epsilon',{}, 'delta',{}, 'R',{}, 'one_minus_R',{}, 'v_eff',{}, ...
+    'nprime',{}, 'mu_r_term',{}, 'mu_u_term',{}, 'source',{});
+% <<< END DEBUG-ONLY BLOCK >>>
+
+for i = 1:nroi
+    try
 
     % ------------------------------------------------------------------
     % Identify which source regions j are connected to target i.
@@ -446,8 +469,31 @@ parfor i = 1:nroi
     assert(numel(mu_r_0_i) == sum(i_app), 'mu_r_0_i length mismatch vs i_app'); % rwk_debug
     assert(numel(mu_r_L_i) == sum(i_app), 'mu_r_L_i length mismatch vs i_app'); % rwk_debug
 
-    if ~isempty(tau_x0_i)  % skip if region i has no incoming connections
-        options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
+    % -------------------------------
+    % Temporarily Commenting this out (11/5/2026) to explore different
+    % solvers.
+    % -------------------------------
+    % if ~isempty(tau_x0_i)  % skip if region i has no incoming connections
+    %     options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
+    % 
+    %     % idx_netw: edge is "active" if EITHER endpoint has seeded tau.
+    %     % This controls whether F_edge (distributed source) is applied.
+    %     idx_netw = logical(idx_netw_x0_i + idx_netw_xL_i);
+    % 
+    %     % Build the shooting residual for all source regions simultaneously
+    %     fun_ss = @(B) f_init(B, tau_x0_i, tau_xL_i, idx_netw, ...
+    %                           lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
+    %                           delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i,mu_r_0_i,mu_u_0_i,mu_r_L_i,mu_u_L_i);
+    % 
+    %     % Warm-start fsolve from the previous step's n(0) values (+ tiny perturbation)
+    %     f0 = f_ss0(i_app, i) + 1e-7;
+    % 
+    %     % Solve for the shooting parameter n(0) on all active (j→i) axons
+    %     n_ss0_temp = fsolve(fun_ss, f0, options_fsolve);
+    % ----------------------------------------------------
+
+    if ~isempty(tau_x0_i) % skip if region i has no incoming connections
+        options_lsq = optimoptions('lsqnonlin', 'FunctionTolerance', ip.Results.fsolvetol, 'Display', 'off');
 
         % idx_netw: edge is "active" if EITHER endpoint has seeded tau.
         % This controls whether F_edge (distributed source) is applied.
@@ -455,14 +501,16 @@ parfor i = 1:nroi
 
         % Build the shooting residual for all source regions simultaneously
         fun_ss = @(B) f_init(B, tau_x0_i, tau_xL_i, idx_netw, ...
-                              lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
-                              delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i,mu_r_0_i,mu_u_0_i,mu_r_L_i,mu_u_L_i);
+            lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
+            delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i,mu_r_0_i,mu_u_0_i,mu_r_L_i,mu_u_L_i);
 
-        % Warm-start fsolve from the previous step's n(0) values (+ tiny perturbation)
+        % Warm-start from the previous step's n(0) values (+ tiny perturbation)
         f0 = f_ss0(i_app, i) + 1e-7;
 
-        % Solve for the shooting parameter n(0) on all active (j→i) axons
-        n_ss0_temp = fsolve(fun_ss, f0, options_fsolve);
+        % Solve for the shooting parameter n(0) on all active (j->i) axons,
+        % constrained to n(0) >= 0 (n is a density -- never physically negative).
+        lb = zeros(size(f0));
+        n_ss0_temp = lsqnonlin(fun_ss, f0, lb, [], options_lsq);
 
         % ------------------------------------------------------------------
         % Pack results into full-nroi arrays (zero for inactive edges).
@@ -513,8 +561,21 @@ parfor i = 1:nroi
         temp_netflux_L = zeros(nroi, 1);
         temp_netflux_L(i_app) = netflux_L_temp;
         network_flux_L_dict(i, :) = temp_netflux_L;
+
+    end  % closes "if ~isempty(tau_x0_i)" -- KEEP this end when the debug block below is removed
+
+    % >>> DEBUG-ONLY BLOCK (axon stiffness investigation) - DELETE WHEN DONE <<<
+    catch ME
+        if ip.Results.debug_terms
+            logfile = sprintf('axon_debug_log_region%d_%s.mat', i, datestr(now,'yyyymmdd_HHMMSS'));
+            save(logfile, 'term_log', 'i');
+            fprintf('Debug term log saved to %s (%d RHS evaluations recorded)\n', logfile, numel(term_log));
+        end
+        rethrow(ME);
     end
-end  % parfor over target regions i
+    % <<< END DEBUG-ONLY BLOCK >>>
+end  % for loop over target regions i
+%end  % parfor over target regions i
 
 % =========================================================================
 % SECTION 9: Unpack the parfor results into the output matrices
@@ -575,13 +636,48 @@ res_max = max(abs(res), [], 'all');
     %   v_a*(1+delta*n)   : anterograde velocity enhanced by motor crowding
     %   *(1-...)           : speed reduction when aggregated tau (∝ n^2) clogs motors
     %   -v_r              : net retrograde component subtracted
+    % >>> ORIGINAL (pre-debug) ode_ss_axon, kept here for easy revert. Restore
+    % this and delete the decomposed version below once debugging is done. <<<
+    % function nprime = ode_ss_axon(x, B, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, n, N_i, mu_r_0_i, mu_u_0_i, idx)
+    %     nprime = 1 ./ (ip.Results.frac * diff_n) .* ...
+    %              ((1 - ip.Results.frac) .* ...
+    %               ((v_a .* (1 + delta_fun(delta_i,delta_j,x) .* n) .* ...
+    %                 (1 - (gamma1_fun(gamma1_i, gamma1_j,x) .* epsilon_fun(epsilon_i,epsilon_j,x) .* n.^2) ./ ...
+    %                      (beta_new - ip.Results.gamma2 .* n)) - v_r)) .* n + ...
+    %               mu_r_0_i .* B - mu_u_0_i .* N_i - int_F_edge(x, idx));
+    % end
+    % <<< END ORIGINAL >>>
     function nprime = ode_ss_axon(x, B, gamma1_i, gamma1_j, delta_i, delta_j, epsilon_i, epsilon_j, n, N_i, mu_r_0_i, mu_u_0_i, idx)
+        g = gamma1_fun(gamma1_i, gamma1_j, x);
+        e = epsilon_fun(epsilon_i, epsilon_j, x);
+        d = delta_fun(delta_i, delta_j, x);
+        R = (g .* e .* n.^2) ./ (beta_new - ip.Results.gamma2 .* n);
+        v_eff_now = v_a .* (1 + d .* n) .* (1 - R) - v_r;
+        src = int_F_edge(x, idx);
         nprime = 1 ./ (ip.Results.frac * diff_n) .* ...
-                 ((1 - ip.Results.frac) .* ...
-                  ((v_a .* (1 + delta_fun(delta_i,delta_j,x) .* n) .* ...
-                    (1 - (gamma1_fun(gamma1_i, gamma1_j,x) .* epsilon_fun(epsilon_i,epsilon_j,x) .* n.^2) ./ ...
-                         (beta_new - ip.Results.gamma2 .* n)) - v_r)) .* n + ...
-                  mu_r_0_i .* B - mu_u_0_i .* N_i - int_F_edge(x, idx));
+            ((1 - ip.Results.frac) .* (v_eff_now .* n) + ...
+            mu_r_0_i .* B - mu_u_0_i .* N_i - src);
+
+        % >>> DEBUG-ONLY BLOCK (axon stiffness investigation) - DELETE WHEN DONE <<<
+        if ip.Results.debug_terms
+            k = numel(term_log) + 1;
+            term_log(k).region_i    = i;
+            term_log(k).call        = k;
+            term_log(k).x           = x;
+            term_log(k).n           = n;
+            term_log(k).B           = B;
+            term_log(k).gamma1      = g;
+            term_log(k).epsilon     = e;
+            term_log(k).delta       = d;
+            term_log(k).R           = R;
+            term_log(k).one_minus_R = 1 - R;
+            term_log(k).v_eff       = v_eff_now;
+            term_log(k).nprime      = nprime;
+            term_log(k).mu_r_term   = mu_r_0_i .* B;
+            term_log(k).mu_u_term   = mu_u_0_i .* N_i;
+            term_log(k).source      = src;
+        end
+        % <<< END DEBUG-ONLY BLOCK >>>
     end
 
 end  % NetworkFluxCalculator_Neu

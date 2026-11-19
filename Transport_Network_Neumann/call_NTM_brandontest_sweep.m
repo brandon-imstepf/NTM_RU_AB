@@ -106,7 +106,7 @@ resmesh_in           = 'coarse';              % 250-pt axon mesh (vs 1000 for 'f
 study_in             = 'Hurtado';
 
 
-trange_in = 0:0.01:0.05;
+trange_in = 0:0.02:0.1;
 %trange_in = 0:0.01:0.1
 %trange_in =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:1];
 
@@ -193,4 +193,4 @@ assert(~any(isnan(spread_final(my_run_idx))), 'segment left some of its OWN cell
 outdir = fileparts(mfilename('fullpath'));
 save(fullfile(outdir, sprintf('fixed_sweep_output_task%02d.mat', task_id)), ...
     'task_id','n_segments','sz','coupling_terms','kappa_frac','r_frac','Dif_frac', ...
-    'baseline_val','spread_final','spread_t50','burden_final');
+    'baseline_val','spread_final','spread_t50','burden_final','res_max_hist');
