@@ -13,13 +13,14 @@ if nargin < 2 || isempty(out_file)
     out_file = fullfile(task_dir, 'sensitivity_sweep_output.mat');
 end
 
-files = dir(fullfile(task_dir, 'sweep_output_task*.mat'));
-assert(~isempty(files), 'No sweep_output_task*.mat files found in %s', task_dir);
+files = dir(fullfile(task_dir, 'fixed_sweep_output_task*.mat'));
+assert(~isempty(files), 'No fixed_sweep_output_task*.mat files found in %s', task_dir);
 
 first = load(fullfile(files(1).folder, files(1).name));
 spread_final = nan(size(first.spread_final));
 spread_t50   = nan(size(first.spread_t50));
 burden_final = nan(size(first.burden_final));
+res_max_worst = nan(size(first.res_max_worst));
 covered      = false(size(spread_final));
 
 for k = 1:numel(files)
@@ -32,6 +33,7 @@ for k = 1:numel(files)
     spread_final(filled) = d.spread_final(filled);
     spread_t50(filled)   = d.spread_t50(filled);
     burden_final(filled) = d.burden_final(filled);
+    res_max_worst(filled) = d.res_max_worst(filled);
     covered = covered | filled;
 end
 
@@ -41,14 +43,14 @@ if ~all(covered(:))
         nnz(~covered));
 end
 
-coupling_terms = first.coupling_terms; %#ok<NASGU>
-kappa_frac     = first.kappa_frac;     %#ok<NASGU>
-baseline_val   = first.baseline_val;   %#ok<NASGU>
-r_frac         = first.r_frac;         %#ok<NASGU>
-Dif_frac       = first.Dif_frac;       %#ok<NASGU>
+coupling_terms = first.coupling_terms; 
+kappa_frac     = first.kappa_frac;     
+baseline_val   = first.baseline_val;  
+r_frac         = first.r_frac;         
+Dif_frac       = first.Dif_frac;       
 
 save(out_file, 'coupling_terms', 'kappa_frac', 'baseline_val', 'r_frac', 'Dif_frac', ...
-    'spread_final', 'spread_t50', 'burden_final');
+    'spread_final', 'spread_t50', 'burden_final', 'res_max_worst');
 fprintf('Saved merged sweep to %s\n', out_file);
 
 end

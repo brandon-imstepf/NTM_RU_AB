@@ -26,7 +26,8 @@ clear; clc;
 % =========================================================================
 % Data directory
 % =========================================================================
-matdir = 'C:\Users\USER\Documents\Code\NTM_ru_ab\Transport_Network_Neumann\MatFiles';
+matdir = '/home/bimstepf/endor/vault/NTM_RU_AB/Transport_Network_Neumann/MatFiles';
+
 
 % =========================================================================
 % Baseline kinetic / boundary-flux parameters
@@ -92,6 +93,7 @@ fprintf('Segment %d/%d handling runs %d-%d of %d\n', ...
 
 run_count = 0;
 
+res_max_worst = nan(nTerms,nKappa,nR,nDif);
 spread_final = nan(nTerms,nKappa, nR, nDif);
 spread_t50 = nan(nTerms,nKappa, nR, nDif);
 burden_final = nan(nTerms,nKappa, nR, nDif);
@@ -138,7 +140,7 @@ for run_idx = my_run_idx
     fprintf('[%d/%d | seg %d/%d] term=%s kappa_frac=%.2f r_frac=%.2f Dif_frac=%.2f\n', ...
         run_idx, total_runs, task_id+1, n_segments, term, kappa_frac(ki), r_frac(ri), Dif_frac(di));
             try
-                [N,M,~, Vol, t] = network_transport_model_Neu_func(matdir, ...
+                [N,M,~, Vol, t, res_max_hist_run] = network_transport_model_Neu_func(matdir, ...
                     'alpha',                alpha_in, ...
                     'F_edge_0',             F_edge_0_in, ...
                     'beta',                 beta_in, ...
@@ -173,6 +175,7 @@ for run_idx = my_run_idx
     if ~isempty(idx)
         spread_t50(ti,ki,ri,di) = t(idx);          % t from the return, not trange_in
     end
+    res_max_worst(ti,ki,ri,di) = max(res_max_hist_run);
     burden_final(ti,ki,ri,di) = sum(Vol .* (N(:,end) + M(:,end)));   % now volume-weighted
             catch ME
              fail_x = NaN;
@@ -193,4 +196,4 @@ assert(~any(isnan(spread_final(my_run_idx))), 'segment left some of its OWN cell
 outdir = fileparts(mfilename('fullpath'));
 save(fullfile(outdir, sprintf('fixed_sweep_output_task%02d.mat', task_id)), ...
     'task_id','n_segments','sz','coupling_terms','kappa_frac','r_frac','Dif_frac', ...
-    'baseline_val','spread_final','spread_t50','burden_final','res_max_hist');
+    'baseline_val','spread_final','spread_t50','burden_final','res_max_worst');

@@ -1,4 +1,4 @@
-function [N, M, R_Edge_Mass, Vol, t] = network_transport_model_Neu_func(matdir, varargin)
+function [N, M, R_Edge_Mass, Vol, t, res_max_hist] = network_transport_model_Neu_func(matdir, varargin)
 % network_transport_model_Neu_func  Main NTM solver: time-evolve tau spread on the brain network.
 %
 % =========================================================================
