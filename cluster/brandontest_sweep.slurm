@@ -3,7 +3,7 @@
 #SBATCH --partition=nodes
 #SBATCH --array=0-319
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
+#SBATCH --mem=8G
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/sweep_%A_%a.out
 

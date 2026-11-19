@@ -76,16 +76,19 @@ nTerms = numel(coupling_terms);
 nKappa = numel(kappa_frac);
 total_runs = nTerms * nKappa *nR * nDif;
 
-% slurm logic % 9/17/2026
-sz = [nTerms, nKappa, nR, nDif];
 
 in_slurm = ~isempty(getenv('SLURM_ARRAY_TASK_ID'));
 if in_slurm
-    n_segments = str2double(getenv('SLURM_ARRAY_TASK_COUNT'));  % matches whatever --array range you submit
+    if ~isempty(getenv('NTM_N_SEGMENTS'))
+        n_segments = str2double(getenv('NTM_N_SEGMENTS'));   % override for smoke tests
+    else
+        n_segments = str2double(getenv('SLURM_ARRAY_TASK_COUNT'));  % matches whatever --array range you submit
+    end
     task_id    = str2double(getenv('SLURM_ARRAY_TASK_ID'));
 else
     n_segments = 1; task_id = 0;
 end
+
 seg_size = ceil(total_runs / n_segments);
 my_run_idx =  (task_id*seg_size+1) : min((task_id+1)*seg_size, total_runs);
 fprintf('Segment %d/%d handling runs %d-%d of %d\n', ...
