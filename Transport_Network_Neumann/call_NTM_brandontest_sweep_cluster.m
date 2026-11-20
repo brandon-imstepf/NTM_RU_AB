@@ -66,6 +66,12 @@ nDif = numel (Dif_frac);
 %   'mu_u' | 'mu_r' | 'delta' | 'epsilon' | 'none'
 coupling_term_in = 'mu_u';
 
+% --- Solver selector: override with NTM_SOLVER=fsolve to run the fsolve pass ---
+solver_in = 'lsqnonlin';
+if ~isempty(getenv('NTM_SOLVER'))
+    solver_in = getenv('NTM_SOLVER');
+end
+
 
 % Sweep Design %
 kappa_frac = [0,0.1,0.5,1,2];
@@ -112,7 +118,8 @@ resmesh_in           = 'coarse';              % 250-pt axon mesh (vs 1000 for 'f
 study_in             = 'Hurtado';
 
 
-trange_in = 0:0.02:0.1;
+trange_in = [linspace(0, 0.01, 11), linspace(0.012, 0.1, 23), linspace(0.11, 0.25, 8), linspace(0.28, 0.5, 5)];
+%trange_in = 0:0.02:0.1
 %trange_in = 0:0.01:0.1
 %trange_in =[0:0.0005:0.002, 0.0025: 0.0025: 0.1, 0.105:0.005:0.3, 0.31:0.01:1];
 
@@ -169,6 +176,7 @@ for run_idx = my_run_idx
                     'connectome_subset',    connectome_subset_in, ...
                     'resmesh',              resmesh_in,...
                     'trange',               trange_in,...
+                    'solver',               solver_in, ...
                     'study',                study_in);
             
                 i_zero = (N(:,1)==0);
@@ -198,6 +206,6 @@ n_failed = sum(isnan(spread_final(my_run_idx)));
 assert(~any(isnan(spread_final(my_run_idx))), 'segment left some of its OWN cells unfilled!');
 
 outdir = fileparts(mfilename('fullpath'));
-save(fullfile(outdir, sprintf('fixed_sweep_output_task%02d.mat', task_id)), ...
+save(fullfile(outdir, sprintf('fixed_sweep_output_task%02d_%s.mat', task_id, solver_in)), ...
     'task_id','n_segments','sz','coupling_terms','kappa_frac','r_frac','Dif_frac', ...
-    'baseline_val','spread_final','spread_t50','burden_final','res_max_worst');
+    'baseline_val','spread_final','spread_t50','burden_final','res_max_worst','solver_in');

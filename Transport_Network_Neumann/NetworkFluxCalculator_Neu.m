@@ -105,11 +105,6 @@ time_scale_   = 1;        % set to 1 here; caller may pass actual time scale
 % AB-Specific Parameters (Brandon, 7/31/2026)
 % To do
 
-% debug
-solverToggle = "lsq";
-%solverToggle = "fsolve";
-
-
 % Boundary flux constants
 F_edge_0_      = 1e-08 * time_scale_;
 mu_r_0_        = 1e-05 * time_scale_;   % release rate at soma end
@@ -130,6 +125,7 @@ validScalar  =      @(x) isnumeric(x) && isscalar(x) && (x >= 0);
 validArray   =      @(x) isnumeric(x);
 validLogical =      @(x) islogical(x);
 validAxonDiv =      @(x) strcmp(x,'r1') | strcmp(x,'half') | strcmp(x,'r2');
+validSolver  =      @(x) any(strcmpi(x, {'lsqnonlin','fsolve'}));
 
 
 addParameter(ip, 'beta',              beta_,          validScalar);
@@ -165,7 +161,10 @@ addParameter(ip, 'len_scale',         len_scale_,     validScalar);
 addParameter(ip, 'time_scale',        time_scale_,    validScalar);
 addParameter(ip, 'axon_div',          axon_div_,      validAxonDiv);
 addParameter(ip, 'debug_terms',       false,          validLogical); % >>> DEBUG-ONLY: delete when stiffness debugging is complete <<<
+addParameter(ip, 'solver',            'lsqnonlin',    validSolver);
 parse(ip, varargin{:});
+
+solverToggle = ip.Results.solver;
 
 % =========================================================================
 % SECTION 3: Derived physical constants (scaled to model units)
@@ -469,32 +468,7 @@ for i = 1:nroi
     assert(numel(mu_r_0_i) == sum(i_app), 'mu_r_0_i length mismatch vs i_app'); % rwk_debug
     assert(numel(mu_r_L_i) == sum(i_app), 'mu_r_L_i length mismatch vs i_app'); % rwk_debug
 
-    % -------------------------------
-    % Temporarily Commenting this out (11/5/2026) to explore different
-    % solvers.
-    % -------------------------------
-    % if ~isempty(tau_x0_i)  % skip if region i has no incoming connections
-    %     options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
-    % 
-    %     % idx_netw: edge is "active" if EITHER endpoint has seeded tau.
-    %     % This controls whether F_edge (distributed source) is applied.
-    %     idx_netw = logical(idx_netw_x0_i + idx_netw_xL_i);
-    % 
-    %     % Build the shooting residual for all source regions simultaneously
-    %     fun_ss = @(B) f_init(B, tau_x0_i, tau_xL_i, idx_netw, ...
-    %                           lambda1_x0_i, lambda1_xL_i, gamma1_x0_i, gamma1_xL_i, ...
-    %                           delta_x0_i, delta_xL_i, epsilon_x0_i, epsilon_xL_i,mu_r_0_i,mu_u_0_i,mu_r_L_i,mu_u_L_i);
-    % 
-    %     % Warm-start fsolve from the previous step's n(0) values (+ tiny perturbation)
-    %     f0 = f_ss0(i_app, i) + 1e-7;
-    % 
-    %     % Solve for the shooting parameter n(0) on all active (j→i) axons
-    %     n_ss0_temp = fsolve(fun_ss, f0, options_fsolve);
-    % ----------------------------------------------------
-
     if ~isempty(tau_x0_i) % skip if region i has no incoming connections
-        options_lsq = optimoptions('lsqnonlin', 'FunctionTolerance', ip.Results.fsolvetol, 'Display', 'off');
-
         % idx_netw: edge is "active" if EITHER endpoint has seeded tau.
         % This controls whether F_edge (distributed source) is applied.
         idx_netw = logical(idx_netw_x0_i + idx_netw_xL_i);
@@ -507,10 +481,16 @@ for i = 1:nroi
         % Warm-start from the previous step's n(0) values (+ tiny perturbation)
         f0 = f_ss0(i_app, i) + 1e-7;
 
-        % Solve for the shooting parameter n(0) on all active (j->i) axons,
-        % constrained to n(0) >= 0 (n is a density -- never physically negative).
-        lb = zeros(size(f0));
-        n_ss0_temp = lsqnonlin(fun_ss, f0, lb, [], options_lsq);
+        switch lower(ip.Results.solver)
+            case 'fsolve'
+                options_fsolve = optimset('TolFun', ip.Results.fsolvetol, 'Display', 'off');
+                n_ss0_temp = fsolve(fun_ss, f0, options_fsolve);
+            case 'lsqnonlin'
+                options_lsq = optimoptions('lsqnonlin', 'FunctionTolerance', ip.Results.fsolvetol, 'Display', 'off');
+                % constrained to n(0) >= 0 (n is a density -- never physically negative).
+                lb = zeros(size(f0));
+                n_ss0_temp = lsqnonlin(fun_ss, f0, lb, [], options_lsq);
+        end
 
         % ------------------------------------------------------------------
         % Pack results into full-nroi arrays (zero for inactive edges).

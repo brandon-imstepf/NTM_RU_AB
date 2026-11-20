@@ -1,20 +1,23 @@
-function merge_sweep_outputs(task_dir, out_file)
+function merge_sweep_outputs(solver, task_dir, out_file)
 % MERGE_SWEEP_OUTPUTS  Stitch together per-SLURM-array-task
-% sweep_output_task##.mat files (each a NaN-everywhere-except-its-own-slice
+% fixed_sweep_output_task##_<solver>.mat files (each a NaN-everywhere-except-its-own-slice
 % copy of the full sweep grid) into one combined .mat file.
 %
 % Usage:
-%   merge_sweep_outputs()                 % looks in pwd, writes sensitivity_sweep_output.mat
-%   merge_sweep_outputs(task_dir)
-%   merge_sweep_outputs(task_dir, out_file)
+%   merge_sweep_outputs(solver)                 % looks in pwd, writes sensitivity_sweep_output_<solver>.mat
+%   merge_sweep_outputs(solver, task_dir)
+%   merge_sweep_outputs(solver, task_dir, out_file)
 
-if nargin < 1 || isempty(task_dir), task_dir = pwd; end
-if nargin < 2 || isempty(out_file)
-    out_file = fullfile(task_dir, 'sensitivity_sweep_output.mat');
+if nargin < 1 || isempty(solver)
+    error('Specify solver: ''lsqnonlin'' or ''fsolve''.');
+end
+if nargin < 2 || isempty(task_dir), task_dir = pwd; end
+if nargin < 3 || isempty(out_file)
+    out_file = fullfile(task_dir, sprintf('sensitivity_sweep_output_%s.mat', solver));
 end
 
-files = dir(fullfile(task_dir, 'fixed_sweep_output_task*.mat'));
-assert(~isempty(files), 'No fixed_sweep_output_task*.mat files found in %s', task_dir);
+files = dir(fullfile(task_dir, sprintf('fixed_sweep_output_task*_%s.mat', solver)));
+assert(~isempty(files), 'No fixed_sweep_output_task*_%s.mat files found in %s', solver, task_dir);
 
 first = load(fullfile(files(1).folder, files(1).name));
 spread_final = nan(size(first.spread_final));
